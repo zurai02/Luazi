@@ -1,0 +1,64 @@
+{
+  "name": "luazi",
+  "version": "1.0.0-alpha.1",
+  "description": "Luazi — The next-generation scripting language. Lua ergonomics, TypeScript safety, Rust performance, C# ecosystem.",
+  "main": "dist/luazi.js",
+  "types": "dist/luazi.d.ts",
+  "bin": {
+    "luazi": "dist/cli.js",
+    "lz": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "npm run build:ts && npm run build:wasm && npm run build:native && npm run build:cs",
+    "build:ts": "tsc",
+    "build:wasm": "emcc src/runtime/cpp/*.cpp -O3 -s WASM=1 -s EXPORT_ES6=1 -s MODULARIZE=1 -s EXPORT_NAME=LuaziRuntime -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=64MB -s MAXIMUM_MEMORY=512MB -s EXPORTED_FUNCTIONS='["_malloc","_free","_lz_createVM","_lz_destroyVM","_lz_execute","_lz_callFunction","_lz_getGlobal","_lz_setGlobal","_lz_collectGarbage","_lz_getMemoryStats"]' -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","UTF8ToString","stringToUTF8","lengthBytesUTF8"]' -o dist/luazi.wasm.js",
+    "build:native": "g++ -std=c++20 -O3 -flto -march=native -DNDEBUG src/runtime/cpp/*.cpp -o dist/luazi-native",
+    "build:cs": "dotnet build Luazi.sln -c Release",
+    "build:cs:debug": "dotnet build Luazi.sln -c Debug",
+    "build:wat": "wat2wasm src/runtime/wat/core.wat -o dist/core.wasm",
+    "dev": "tsc --watch",
+    "test": "jest && dotnet test",
+    "test:ts": "jest",
+    "test:cs": "dotnet test",
+    "bench": "node benchmarks/runner.js",
+    "fmt": "prettier --write \"src/**/*.ts\" \"examples/**/*.lz\"",
+    "lint": "eslint src/**/*.ts",
+    "clean": "rm -rf dist/ && dotnet clean Luazi.sln"
+  },
+  "keywords": [
+    "luazi", "lua", "luau", "scripting", "language", "compiler",
+    "webassembly", "wasm", "performance", "game-development", "embedded",
+    "csharp", "dotnet", "typescript", "simd", "arena-allocator"
+  ],
+  "author": "zurai02 <lol066351>",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0",
+    "jest": "^29.0.0",
+    "@types/jest": "^29.0.0",
+    "ts-jest": "^29.0.0",
+    "prettier": "^3.0.0",
+    "eslint": "^8.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0"
+  },
+  "dependencies": {
+    "commander": "^11.0.0",
+    "chalk": "^5.3.0",
+    "chokidar": "^3.5.0"
+  },
+  "files": [
+    "dist/",
+    "src/stdlib/",
+    "config.toml",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zurai02/luazi.git"
+  }
+}
