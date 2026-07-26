@@ -1,0 +1,384 @@
+// Luazi Standard Library - Core Module
+// Auto-imported in every Luazi file
+
+// ============================================================================
+// TYPE DEFINITIONS
+// ============================================================================
+
+pub type Option<T> = enum {
+  Some(T),
+  None,
+}
+
+pub type Result<T, E> = enum {
+  Ok(T),
+  Err(E),
+}
+
+pub type Vec<T> = struct {
+  data: [T],
+  len: number,
+  capacity: number,
+}
+
+pub type Map<K, V> = struct {
+  entries: [{ key: K, value: V }],
+  size: number,
+}
+
+pub type String = struct {
+  bytes: [number],
+  len: number,
+}
+
+// ============================================================================
+// CORE FUNCTIONS
+// ============================================================================
+
+/// Print a value to stdout
+pub fn print(...args: any) -> nil {
+  for arg in args {
+    // Runtime intrinsic
+  }
+}
+
+/// Print with formatting
+pub fn println(...args: any) -> nil {
+  print(...args, "\n")
+}
+
+/// Format a string using placeholders
+pub fn format(template: string, ...args: any) -> string {
+  // String interpolation runtime
+  return template
+}
+
+/// Assert a condition is true
+pub fn assert(condition: bool, message: string = "Assertion failed") -> nil {
+  if not condition {
+    throw message
+  }
+}
+
+/// Panic with a message
+pub fn panic(message: string = "panic") -> never {
+  throw message
+}
+
+/// Get the type of a value
+pub fn type_of(value: any) -> string {
+  // Runtime intrinsic
+  return "unknown"
+}
+
+/// Check if a value is of a specific type
+pub fn is_type(value: any, type_name: string) -> bool {
+  return type_of(value) == type_name
+}
+
+/// Convert a value to a string
+pub fn to_string(value: any) -> string {
+  // Runtime intrinsic
+  return ""
+}
+
+/// Convert a string to a number
+pub fn to_number(value: string) -> Option<number> {
+  const n = parseFloat(value)
+  if isNaN(n) {
+    return Option.None
+  }
+  return Option.Some(n)
+}
+
+/// Deep clone a value
+pub fn clone<T>(value: T) -> T {
+  // Runtime intrinsic for deep copy
+  return value
+}
+
+/// Get the memory address of a value (unsafe)
+pub unsafe fn addr_of(value: any) -> number {
+  // Runtime intrinsic
+  return 0
+}
+
+/// Swap two values
+pub fn swap<T>(a: ref mut T, b: ref mut T) -> nil {
+  const temp = *a
+  *a = *b
+  *b = temp
+}
+
+/// Get the length of a collection
+pub fn len<T>(collection: [T] | string | Map<any, any>) -> number {
+  // Runtime intrinsic
+  return 0
+}
+
+/// Check if a collection contains a value
+pub fn contains<T>(collection: [T], value: T) -> bool {
+  for item in collection {
+    if item == value {
+      return true
+    }
+  }
+  return false
+}
+
+/// Find the index of a value in a collection
+pub fn index_of<T>(collection: [T], value: T) -> Option<number> {
+  for i, item in collection {
+    if item == value {
+      return Option.Some(i)
+    }
+  }
+  return Option.None
+}
+
+/// Reverse a collection in place
+pub fn reverse<T>(collection: ref mut [T]) -> nil {
+  let left = 0
+  let right = len(collection) - 1
+  while left < right {
+    swap(&collection[left], &collection[right])
+    left += 1
+    right -= 1
+  }
+}
+
+/// Sort a collection in place
+pub fn sort<T>(collection: ref mut [T], comparator: fn(a: T, b: T) -> number = nil) -> nil {
+  // QuickSort implementation
+  fn quicksort(arr: ref mut [T], low: number, high: number) -> nil {
+    if low < high {
+      const pi = partition(arr, low, high)
+      quicksort(arr, low, pi - 1)
+      quicksort(arr, pi + 1, high)
+    }
+  }
+
+  fn partition(arr: ref mut [T], low: number, high: number) -> number {
+    const pivot = arr[high]
+    let i = low - 1
+    for j in low..high {
+      if comparator != nil {
+        if comparator(arr[j], pivot) <= 0 {
+          i += 1
+          swap(&arr[i], &arr[j])
+        }
+      } else {
+        if arr[j] <= pivot {
+          i += 1
+          swap(&arr[i], &arr[j])
+        }
+      }
+    }
+    swap(&arr[i + 1], &arr[high])
+    return i + 1
+  }
+
+  quicksort(collection, 0, len(collection) - 1)
+}
+
+/// Map a function over a collection
+pub fn map<T, U>(collection: [T], f: fn(item: T) -> U) -> [U] {
+  let result: [U] = []
+  for item in collection {
+    result.push(f(item))
+  }
+  return result
+}
+
+/// Filter a collection
+pub fn filter<T>(collection: [T], predicate: fn(item: T) -> bool) -> [T] {
+  let result: [T] = []
+  for item in collection {
+    if predicate(item) {
+      result.push(item)
+    }
+  }
+  return result
+}
+
+/// Reduce a collection to a single value
+pub fn reduce<T, U>(collection: [T], initial: U, f: fn(acc: U, item: T) -> U) -> U {
+  let result = initial
+  for item in collection {
+    result = f(result, item)
+  }
+  return result
+}
+
+/// Find the first element matching a predicate
+pub fn find<T>(collection: [T], predicate: fn(item: T) -> bool) -> Option<T> {
+  for item in collection {
+    if predicate(item) {
+      return Option.Some(item)
+    }
+  }
+  return Option.None
+}
+
+/// Flatten a nested array
+pub fn flatten<T>(collection: [[T]]) -> [T] {
+  let result: [T] = []
+  for arr in collection {
+    for item in arr {
+      result.push(item)
+    }
+  }
+  return result
+}
+
+/// Zip two collections together
+pub fn zip<T, U>(a: [T], b: [U]) -> [{ first: T, second: U }] {
+  let result: [{ first: T, second: U }] = []
+  const min_len = math.min(len(a), len(b))
+  for i in 0..min_len {
+    result.push({ first: a[i], second: b[i] })
+  }
+  return result
+}
+
+/// Range generator
+pub fn range(start: number, end: number, step: number = 1) -> [number] {
+  let result: [number] = []
+  let current = start
+  while current < end {
+    result.push(current)
+    current += step
+  }
+  return result
+}
+
+/// Repeat a value n times
+pub fn repeat<T>(value: T, n: number) -> [T] {
+  let result: [T] = []
+  for _ in 0..n {
+    result.push(clone(value))
+  }
+  return result
+}
+
+/// Memoize a function
+pub fn memoize<T, U>(f: fn(arg: T) -> U) -> fn(arg: T) -> U {
+  let cache: Map<T, U> = Map.new()
+  return fn(arg: T) -> U {
+    if cache.has(arg) {
+      return cache.get(arg)
+    }
+    const result = f(arg)
+    cache.set(arg, result)
+    return result
+  }
+}
+
+/// Compose two functions
+pub fn compose<T, U, V>(f: fn(x: U) -> V, g: fn(x: T) -> U) -> fn(x: T) -> V {
+  return fn(x: T) -> V {
+    return f(g(x))
+  }
+}
+
+/// Pipe a value through functions
+pub fn pipe<T>(value: T, ...fns: [fn(x: any) -> any]) -> any {
+  let result = value
+  for f in fns {
+    result = f(result)
+  }
+  return result
+}
+
+/// Curry a function
+pub fn curry<T, U, V>(f: fn(a: T, b: U) -> V) -> fn(a: T) -> fn(b: U) -> V {
+  return fn(a: T) -> fn(b: U) -> V {
+    return fn(b: U) -> V {
+      return f(a, b)
+    }
+  }
+}
+
+/// Partial application
+pub fn partial<T, U, V>(f: fn(a: T, b: U) -> V, a: T) -> fn(b: U) -> V {
+  return fn(b: U) -> V {
+    return f(a, b)
+  }
+}
+
+/// Identity function
+pub fn id<T>(x: T) -> T {
+  return x
+}
+
+/// Constant function
+pub fn const<T, U>(x: T) -> fn(_: U) -> T {
+  return fn(_: U) -> T {
+    return x
+  }
+}
+
+/// Flip function arguments
+pub fn flip<T, U, V>(f: fn(a: T, b: U) -> V) -> fn(a: U, b: T) -> V {
+  return fn(a: U, b: T) -> V {
+    return f(b, a)
+  }
+}
+
+/// Apply a function
+pub fn apply<T, U>(f: fn(arg: T) -> U, arg: T) -> U {
+  return f(arg)
+}
+
+/// Bind a method to an object
+pub fn bind<T, U>(obj: T, method: fn(self: T) -> U) -> fn() -> U {
+  return fn() -> U {
+    return method(obj)
+  }
+}
+
+/// Create a timer
+pub fn timer() -> struct {
+  start_time: number = 0,
+  elapsed: number = 0,
+
+  fn start(self) -> nil {
+    self.start_time = time.now()
+  }
+
+  fn stop(self) -> number {
+    self.elapsed = time.now() - self.start_time
+    return self.elapsed
+  }
+
+  fn reset(self) -> nil {
+    self.start_time = 0
+    self.elapsed = 0
+  }
+}
+
+/// Benchmark a function
+pub fn benchmark<T>(name: string, f: fn() -> T, iterations: number = 1000) -> struct {
+  name: string,
+  iterations: number,
+  total_ms: number,
+  avg_ms: number,
+  ops_per_sec: number,
+} {
+  const t = timer()
+  t.start()
+
+  for _ in 0..iterations {
+    f()
+  }
+
+  const total = t.stop()
+
+  return {
+    name: name,
+    iterations: iterations,
+    total_ms: total,
+    avg_ms: total / iterations,
+    ops_per_sec: iterations / (total / 1000),
+  }
+}
