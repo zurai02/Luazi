@@ -1,0 +1,62 @@
+Runtime.csproj
+VM.cs
+C# Compiler
+Luazi.Compiler.csproj
+Compiler.cs
+Standard Library
+core.lz
+math.lz
+Examples
+hello.lz
+fib.lz
+game.lz
+async.lz
+simd.lz
+Benchmarks
+runner.js
+
+
+Instant
+High
+.gitignore
+# Dependencies
+node_modules/
+*.log
+
+# Build output
+dist/
+*.wasm
+*.wasm.js
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.dylib
+
+# C# build
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
