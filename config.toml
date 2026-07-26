@@ -1,0 +1,89 @@
+# Luazi Language Configuration
+# This is the default compiler and runtime configuration.
+# Override per-project with a luazi.toml in your project root.
+
+[compiler]
+# Optimization level: 0 (debug), 1, 2, 3 (aggressive)
+opt_level = 3
+# Target: "wasm", "js", "native", "auto"
+target = "auto"
+# Enable SIMD where available
+simd = true
+# Link-time optimization
+lto = true
+# Strip debug symbols
+strip = false
+# Output source maps
+source_maps = true
+
+[type_system]
+# Mode: "strict", "gradual", "off"
+mode = "gradual"
+# Enable global type inference
+inference = true
+# Generic constraint checking
+strict_generics = true
+# Null safety
+null_safety = true
+
+[runtime]
+# Memory allocator: "arena", "pool", "system"
+allocator = "arena"
+# GC strategy: "generational", "incremental", "none"
+gc_strategy = "generational"
+# Initial heap size in MB
+heap_size = 64
+# Max heap size in MB (0 = unlimited)
+max_heap = 512
+# Stack size in KB per coroutine
+stack_size = 256
+# Enable JIT compilation (native target only)
+jit = true
+
+[performance]
+# Inline threshold for hot functions (call count)
+inline_threshold = 1000
+# Loop unrolling factor
+loop_unroll = 4
+# Vectorize array operations
+vectorize = true
+# Cache method lookups
+cache_methods = true
+# Use object pooling for temporary objects
+object_pooling = true
+
+[stdlib]
+# Modules to auto-import in every file
+auto_import = ["core", "array", "map", "string", "math"]
+# Strict stdlib (no dynamic features)
+strict = false
+# Async runtime: "tokio-like", "callbacks", "none"
+async_runtime = "tokio-like"
+
+[debug]
+# Enable assertions in compiled output
+assertions = false
+# Bounds checking: "always", "safe", "never"
+bounds_check = "safe"
+# Stack trace on error
+stack_traces = true
+# Profile output file (null = disabled)
+profile_output = null
+
+[wasm]
+# Export memory to JS
+export_memory = true
+# Allow JS to call Luazi functions directly
+export_functions = true
+# Import JS functions into Luazi
+import_js = true
+# SIMD128 support
+simd128 = true
+# Bulk memory operations
+bulk_memory = true
+
+[formatter]
+indent = "  "
+line_width = 100
+trainling_comma = "always"
+quote_style = "double"
