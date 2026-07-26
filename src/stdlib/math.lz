@@ -1,0 +1,538 @@
+// Luazi Standard Library - Math Module
+// High-performance mathematical operations with SIMD support
+
+pub type Vec2 = struct {
+  x: number = 0,
+  y: number = 0,
+
+  fn new(x: number, y: number) -> Vec2 {
+    return Vec2 { x, y }
+  }
+
+  fn add(self, other: Vec2) -> Vec2 {
+    return Vec2.new(self.x + other.x, self.y + other.y)
+  }
+
+  fn sub(self, other: Vec2) -> Vec2 {
+    return Vec2.new(self.x - other.x, self.y - other.y)
+  }
+
+  fn mul(self, scalar: number) -> Vec2 {
+    return Vec2.new(self.x * scalar, self.y * scalar)
+  }
+
+  fn dot(self, other: Vec2) -> number {
+    return self.x * other.x + self.y * other.y
+  }
+
+  fn length(self) -> number {
+    return math.sqrt(self.x * self.x + self.y * self.y)
+  }
+
+  fn normalize(self) -> Vec2 {
+    const len = self.length()
+    if len == 0 {
+      return Vec2.new(0, 0)
+    }
+    return self.mul(1 / len)
+  }
+
+  fn distance(self, other: Vec2) -> number {
+    return self.sub(other).length()
+  }
+
+  fn lerp(self, other: Vec2, t: number) -> Vec2 {
+    return self.add(other.sub(self).mul(t))
+  }
+
+  fn to_string(self) -> string {
+    return format("Vec2({:.4}, {:.4})", self.x, self.y)
+  }
+}
+
+pub type Vec3 = struct {
+  x: number = 0,
+  y: number = 0,
+  z: number = 0,
+
+  fn new(x: number, y: number, z: number) -> Vec3 {
+    return Vec3 { x, y, z }
+  }
+
+  fn add(self, other: Vec3) -> Vec3 {
+    return Vec3.new(self.x + other.x, self.y + other.y, self.z + other.z)
+  }
+
+  fn sub(self, other: Vec3) -> Vec3 {
+    return Vec3.new(self.x - other.x, self.y - other.y, self.z - other.z)
+  }
+
+  fn mul(self, scalar: number) -> Vec3 {
+    return Vec3.new(self.x * scalar, self.y * scalar, self.z * scalar)
+  }
+
+  fn dot(self, other: Vec3) -> number {
+    return self.x * other.x + self.y * other.y + self.z * other.z
+  }
+
+  fn cross(self, other: Vec3) -> Vec3 {
+    return Vec3.new(
+      self.y * other.z - self.z * other.y,
+      self.z * other.x - self.x * other.z,
+      self.x * other.y - self.y * other.x
+    )
+  }
+
+  fn length(self) -> number {
+    return math.sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
+  }
+
+  fn normalize(self) -> Vec3 {
+    const len = self.length()
+    if len == 0 {
+      return Vec3.new(0, 0, 0)
+    }
+    return self.mul(1 / len)
+  }
+
+  fn distance(self, other: Vec3) -> number {
+    return self.sub(other).length()
+  }
+
+  fn lerp(self, other: Vec3, t: number) -> Vec3 {
+    return self.add(other.sub(self).mul(t))
+  }
+
+  fn to_string(self) -> string {
+    return format("Vec3({:.4}, {:.4}, {:.4})", self.x, self.y, self.z)
+  }
+}
+
+pub type Vec4 = struct {
+  x: number = 0,
+  y: number = 0,
+  z: number = 0,
+  w: number = 0,
+
+  fn new(x: number, y: number, z: number, w: number) -> Vec4 {
+    return Vec4 { x, y, z, w }
+  }
+
+  fn add(self, other: Vec4) -> Vec4 {
+    return Vec4.new(
+      self.x + other.x,
+      self.y + other.y,
+      self.z + other.z,
+      self.w + other.w
+    )
+  }
+
+  fn dot(self, other: Vec4) -> number {
+    return self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w
+  }
+
+  fn length(self) -> number {
+    return math.sqrt(self.dot(self))
+  }
+}
+
+pub type Mat4 = struct {
+  data: [number] = repeat(0, 16),
+
+  fn identity() -> Mat4 {
+    let m = Mat4 {}
+    m.data[0] = 1
+    m.data[5] = 1
+    m.data[10] = 1
+    m.data[15] = 1
+    return m
+  }
+
+  fn translate(x: number, y: number, z: number) -> Mat4 {
+    let m = Mat4.identity()
+    m.data[12] = x
+    m.data[13] = y
+    m.data[14] = z
+    return m
+  }
+
+  fn scale(x: number, y: number, z: number) -> Mat4 {
+    let m = Mat4 {}
+    m.data[0] = x
+    m.data[5] = y
+    m.data[10] = z
+    m.data[15] = 1
+    return m
+  }
+
+  fn rotate_x(angle: number) -> Mat4 {
+    const c = math.cos(angle)
+    const s = math.sin(angle)
+    let m = Mat4.identity()
+    m.data[5] = c
+    m.data[6] = -s
+    m.data[9] = s
+    m.data[10] = c
+    return m
+  }
+
+  fn rotate_y(angle: number) -> Mat4 {
+    const c = math.cos(angle)
+    const s = math.sin(angle)
+    let m = Mat4.identity()
+    m.data[0] = c
+    m.data[2] = s
+    m.data[8] = -s
+    m.data[10] = c
+    return m
+  }
+
+  fn rotate_z(angle: number) -> Mat4 {
+    const c = math.cos(angle)
+    const s = math.sin(angle)
+    let m = Mat4.identity()
+    m.data[0] = c
+    m.data[1] = -s
+    m.data[4] = s
+    m.data[5] = c
+    return m
+  }
+
+  fn mul(self, other: Mat4) -> Mat4 {
+    let result = Mat4 {}
+    for i in 0..4 {
+      for j in 0..4 {
+        let sum = 0.0
+        for k in 0..4 {
+          sum += self.data[i * 4 + k] * other.data[k * 4 + j]
+        }
+        result.data[i * 4 + j] = sum
+      }
+    }
+    return result
+  }
+
+  fn transform(self, v: Vec4) -> Vec4 {
+    return Vec4.new(
+      self.data[0] * v.x + self.data[4] * v.y + self.data[8] * v.z + self.data[12] * v.w,
+      self.data[1] * v.x + self.data[5] * v.y + self.data[9] * v.z + self.data[13] * v.w,
+      self.data[2] * v.x + self.data[6] * v.y + self.data[10] * v.z + self.data[14] * v.w,
+      self.data[3] * v.x + self.data[7] * v.y + self.data[11] * v.z + self.data[15] * v.w
+    )
+  }
+}
+
+// ============================================================================
+// MATH CONSTANTS
+// ============================================================================
+
+pub const PI = 3.141592653589793
+pub const TAU = 6.283185307179586
+pub const E = 2.718281828459045
+pub const PHI = 1.618033988749895
+pub const EPSILON = 1e-10
+pub const INF = 1.0 / 0.0
+pub const NAN = 0.0 / 0.0
+
+// ============================================================================
+// BASIC MATH
+// ============================================================================
+
+pub fn abs(x: number) -> number {
+  return x < 0 ? -x : x
+}
+
+pub fn floor(x: number) -> number {
+  return math.floor(x)
+}
+
+pub fn ceil(x: number) -> number {
+  return math.ceil(x)
+}
+
+pub fn round(x: number) -> number {
+  return math.floor(x + 0.5)
+}
+
+pub fn trunc(x: number) -> number {
+  return x < 0 ? math.ceil(x) : math.floor(x)
+}
+
+pub fn min(a: number, b: number) -> number {
+  return a < b ? a : b
+}
+
+pub fn max(a: number, b: number) -> number {
+  return a > b ? a : b
+}
+
+pub fn clamp(x: number, min_val: number, max_val: number) -> number {
+  return max(min_val, min(max_val, x))
+}
+
+pub fn lerp(a: number, b: number, t: number) -> number {
+  return a + (b - a) * clamp(t, 0, 1)
+}
+
+pub fn inv_lerp(a: number, b: number, x: number) -> number {
+  return clamp((x - a) / (b - a), 0, 1)
+}
+
+pub fn remap(x: number, in_min: number, in_max: number, out_min: number, out_max: number) -> number {
+  return lerp(out_min, out_max, inv_lerp(in_min, in_max, x))
+}
+
+pub fn sign(x: number) -> number {
+  return x > 0 ? 1 : x < 0 ? -1 : 0
+}
+
+pub fn sqrt(x: number) -> number {
+  return math.sqrt(x)
+}
+
+pub fn cbrt(x: number) -> number {
+  return math.pow(x, 1.0 / 3.0)
+}
+
+pub fn pow(base: number, exp: number) -> number {
+  return math.pow(base, exp)
+}
+
+pub fn exp(x: number) -> number {
+  return math.exp(x)
+}
+
+pub fn log(x: number, base: number = E) -> number {
+  return math.log(x) / math.log(base)
+}
+
+pub fn ln(x: number) -> number {
+  return math.log(x)
+}
+
+pub fn log10(x: number) -> number {
+  return math.log10(x)
+}
+
+pub fn log2(x: number) -> number {
+  return math.log2(x)
+}
+
+// ============================================================================
+// TRIGONOMETRY
+// ============================================================================
+
+pub fn sin(x: number) -> number {
+  return math.sin(x)
+}
+
+pub fn cos(x: number) -> number {
+  return math.cos(x)
+}
+
+pub fn tan(x: number) -> number {
+  return math.tan(x)
+}
+
+pub fn asin(x: number) -> number {
+  return math.asin(x)
+}
+
+pub fn acos(x: number) -> number {
+  return math.acos(x)
+}
+
+pub fn atan(x: number) -> number {
+  return math.atan(x)
+}
+
+pub fn atan2(y: number, x: number) -> number {
+  return math.atan2(y, x)
+}
+
+pub fn sinh(x: number) -> number {
+  return math.sinh(x)
+}
+
+pub fn cosh(x: number) -> number {
+  return math.cosh(x)
+}
+
+pub fn tanh(x: number) -> number {
+  return math.tanh(x)
+}
+
+pub fn deg(x: number) -> number {
+  return x * 180.0 / PI
+}
+
+pub fn rad(x: number) -> number {
+  return x * PI / 180.0
+}
+
+// ============================================================================
+// RANDOM
+// ============================================================================
+
+pub type Random = struct {
+  seed: number = 123456789,
+
+  fn new(seed: number) -> Random {
+    return Random { seed }
+  }
+
+  fn next(self) -> number {
+    // PCG random number generator
+    self.seed = self.seed * 747796405 + 2891336453
+    let word = ((self.seed >> ((self.seed >> 28) + 4)) ^ self.seed) * 277803737
+    word = (word >> 22) ^ word
+    return word / 4294967296.0
+  }
+
+  fn range(self, min: number, max: number) -> number {
+    return min + self.next() * (max - min)
+  }
+
+  fn int_range(self, min: number, max: number) -> number {
+    return math.floor(self.range(min, max))
+  }
+
+  fn bool(self, probability: number = 0.5) -> bool {
+    return self.next() < probability
+  }
+
+  fn choice<T>(self, arr: [T]) -> T {
+    return arr[self.int_range(0, len(arr))]
+  }
+
+  fn shuffle<T>(self, arr: ref mut [T]) -> nil {
+    for i in (len(arr) - 1)..0 {
+      const j = self.int_range(0, i + 1)
+      swap(&arr[i], &arr[j])
+    }
+  }
+}
+
+pub fn random() -> number {
+  return Random {}.next()
+}
+
+pub fn random_range(min: number, max: number) -> number {
+  return Random {}.range(min, max)
+}
+
+pub fn random_int(min: number, max: number) -> number {
+  return Random {}.int_range(min, max)
+}
+
+// ============================================================================
+// SIMD OPERATIONS (4-wide)
+// ============================================================================
+
+pub fn simd_add(a: [number; 4], b: [number; 4]) -> [number; 4] {
+  // Compiles to WASM SIMD128 v128.f64x2.add
+  return [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]]
+}
+
+pub fn simd_mul(a: [number; 4], b: [number; 4]) -> [number; 4] {
+  return [a[0] * b[0], a[1] * b[1], a[2] * b[2], a[3] * b[3]]
+}
+
+pub fn simd_dot(a: [number; 4], b: [number; 4]) -> number {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
+}
+
+pub fn simd_length(a: [number; 4]) -> number {
+  return math.sqrt(simd_dot(a, a))
+}
+
+pub fn simd_normalize(a: [number; 4]) -> [number; 4] {
+  const len = simd_length(a)
+  if len == 0 {
+    return [0, 0, 0, 0]
+  }
+  return simd_mul(a, [1/len, 1/len, 1/len, 1/len])
+}
+
+// ============================================================================
+// INTERPOLATION
+// ============================================================================
+
+pub fn smoothstep(edge0: number, edge1: number, x: number) -> number {
+  const t = clamp((x - edge0) / (edge1 - edge0), 0, 1)
+  return t * t * (3 - 2 * t)
+}
+
+pub fn smootherstep(edge0: number, edge1: number, x: number) -> number {
+  const t = clamp((x - edge0) / (edge1 - edge0), 0, 1)
+  return t * t * t * (t * (t * 6 - 15) + 10)
+}
+
+pub fn bezier(t: number, p0: number, p1: number, p2: number, p3: number) -> number {
+  const u = 1 - t
+  const tt = t * t
+  const uu = u * u
+  const uuu = uu * u
+  const ttt = tt * t
+  return uuu * p0 + 3 * uu * t * p1 + 3 * u * tt * p2 + ttt * p3
+}
+
+// ============================================================================
+// NOISE
+// ============================================================================
+
+pub fn perlin_noise(x: number, y: number, z: number = 0) -> number {
+  // Simplified Perlin noise implementation
+  const X = math.floor(x) & 255
+  const Y = math.floor(y) & 255
+  const Z = math.floor(z) & 255
+
+  x -= math.floor(x)
+  y -= math.floor(y)
+  z -= math.floor(z)
+
+  const u = fade(x)
+  const v = fade(y)
+  const w = fade(z)
+
+  // Simplified - full implementation would use permutation table
+  return lerp(
+    lerp(
+      lerp(grad(0, x, y, z), grad(1, x - 1, y, z), u),
+      lerp(grad(0, x, y - 1, z), grad(1, x - 1, y - 1, z), u),
+      v
+    ),
+    lerp(
+      lerp(grad(0, x, y, z - 1), grad(1, x - 1, y, z - 1), u),
+      lerp(grad(0, x, y - 1, z - 1), grad(1, x - 1, y - 1, z - 1), u),
+      v
+    ),
+    w
+  )
+}
+
+fn fade(t: number) -> number {
+  return t * t * t * (t * (t * 6 - 15) + 10)
+}
+
+fn grad(hash: number, x: number, y: number, z: number) -> number {
+  const h = hash & 15
+  const u = h < 8 ? x : y
+  const v = h < 4 ? y : h == 12 || h == 14 ? x : z
+  return ((h & 1) == 0 ? u : -u) + ((h & 2) == 0 ? v : -v)
+}
+
+pub fn fractal_noise(x: number, y: number, octaves: number = 4, persistence: number = 0.5, lacunarity: number = 2.0) -> number {
+  let total = 0.0
+  let frequency = 1.0
+  let amplitude = 1.0
+  let max_value = 0.0
+
+  for _ in 0..octaves {
+    total += perlin_noise(x * frequency, y * frequency) * amplitude
+    max_value += amplitude
+    amplitude *= persistence
+    frequency *= lacunarity
+  }
+
+  return total / max_valu
