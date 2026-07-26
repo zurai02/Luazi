@@ -1,0 +1,230 @@
+// async.lz - Async/await and concurrency patterns
+// Demonstrates: async functions, promises, channels, parallel execution
+
+import core
+
+// ============================================================================
+// ASYNC BASICS
+// ============================================================================
+
+async fn fetch_data(url: string) -> Result<string, string> {
+  // Simulate network request
+  await time.sleep_async(math.random_range(50, 200))
+
+  if math.random() > 0.2 {
+    return Result.Ok(format("Data from {url}"))
+  } else {
+    return Result.Err("Network error")
+  }
+}
+
+async fn process_data(data: string) -> Result<string, string> {
+  await time.sleep_async(30)
+  return Result.Ok(data.to_uppercase())
+}
+
+// ============================================================================
+// PARALLEL EXECUTION
+// ============================================================================
+
+async fn fetch_all(urls: [string]) -> [Result<string, string>] {
+  // Fetch all URLs in parallel
+  let promises: [Promise<Result<string, string>>] = []
+
+  for url in urls {
+    promises.push(fetch_data(url))
+  }
+
+  // Wait for all to complete
+  let results: [Result<string, string>] = []
+  for promise in promises {
+    results.push(await promise)
+  }
+
+  return results
+}
+
+async fn fetch_race(urls: [string]) -> Result<string, string> {
+  // Return the first successful result
+  let promises: [Promise<Result<string, string>>] = []
+
+  for url in urls {
+    promises.push(fetch_data(url))
+  }
+
+  // Promise.race equivalent
+  return await Promise.race(promises)
+}
+
+// ============================================================================
+// CHANNELS (GO-STYLE)
+// ============================================================================
+
+pub struct Channel<T> {
+  buffer: [T] = [],
+  capacity: number,
+  closed: bool = false,
+}
+
+impl<T> Channel<T> {
+  fn new(capacity: number = 0) -> Channel<T> {
+    return Channel { capacity }
+  }
+
+  async fn send(self, value: T) -> Result<nil, string> {
+    if self.closed {
+      return Result.Err("channel closed")
+    }
+
+    while len(self.buffer) >= self.capacity && self.capacity > 0 {
+      await time.sleep_async(1)
+    }
+
+    self.buffer.push(value)
+    return Result.Ok(nil)
+  }
+
+  async fn receive(self) -> Result<T, string> {
+    while len(self.buffer) == 0 && !self.closed {
+      await time.sleep_async(1)
+    }
+
+    if len(self.buffer) == 0 {
+      return Result.Err("channel closed")
+    }
+
+    return Result.Ok(self.buffer.shift())
+  }
+
+  fn close(self) -> nil {
+    self.closed = true
+  }
+}
+
+// ============================================================================
+// WORKER POOL
+// ============================================================================
+
+pub struct WorkerPool {
+  workers: number,
+  task_queue: Channel<fn() -> any>,
+  result_queue: Channel<any>,
+}
+
+impl WorkerPool {
+  fn new(worker_count: number) -> WorkerPool {
+    return WorkerPool {
+      workers: worker_count,
+      task_queue: Channel.new(100),
+      result_queue: Channel.new(100),
+    }
+  }
+
+  async fn start(self) -> nil {
+    for i in 0..self.workers {
+      spawn worker_loop(self.task_queue, self.result_queue, i)
+    }
+  }
+
+  async fn submit<T>(self, task: fn() -> T) -> T {
+    await self.task_queue.send(task)
+    return await self.result_queue.receive()
+  }
+}
+
+async fn worker_loop(tasks: Channel<fn() -> any>, results: Channel<any>, id: number) -> nil {
+  println("Worker", id, "started")
+
+  while true {
+    const task_result = await tasks.receive()
+
+    match task_result {
+      Result.Ok(task) => {
+        const result = task()
+        await results.send(result)
+      },
+      Result.Err(_) => {
+        println("Worker", id, "shutting down")
+        break
+      },
+    }
+  }
+}
+
+// ============================================================================
+// MAIN
+// ============================================================================
+
+async fn main() -> nil {
+  println("=== Luazi Async Demo ===")
+  println()
+
+  // Sequential async
+  println("1. Sequential async:")
+  const data1 = await fetch_data("https://api.example.com/1")
+  const data2 = await fetch_data("https://api.example.com/2")
+  println("  Data 1:", data1)
+  println("  Data 2:", data2)
+  println()
+
+  // Parallel async
+  println("2. Parallel async:")
+  const urls = [
+    "https://api.example.com/a",
+    "https://api.example.com/b",
+    "https://api.example.com/c",
+  ]
+  const all_results = await fetch_all(urls)
+  for result in all_results {
+    match result {
+      Result.Ok(data) => println("  Success:", data),
+      Result.Err(err) => println("  Error:", err),
+    }
+  }
+  println()
+
+  // Channel demo
+  println("3. Channel demo:")
+  const ch = Channel.new(5)
+
+  // Producer
+  spawn async fn() -> nil {
+    for i in 0..5 {
+      await ch.send(i)
+      println("  Produced:", i)
+    }
+    ch.close()
+  }()
+
+  // Consumer
+  for _ in 0..5 {
+    const value = await ch.receive()
+    match value {
+      Result.Ok(v) => println("  Consumed:", v),
+      Result.Err(e) => println("  Channel error:", e),
+    }
+  }
+  println()
+
+  // Worker pool demo
+  println("4. Worker pool:")
+  const pool = WorkerPool.new(4)
+  await pool.start()
+
+  let tasks: [Promise<number>] = []
+  for i in 0..8 {
+    tasks.push(pool.submit(fn() -> number {
+      return i * i
+    }))
+  }
+
+  for task in tasks {
+    const result = await task
+    println("  Task result:", result)
+  }
+
+  println()
+  println("Async demo complete!")
+}
+
+main()
