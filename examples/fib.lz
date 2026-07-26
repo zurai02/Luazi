@@ -1,0 +1,103 @@
+// fib.lz - Fibonacci with memoization and pattern matching
+// Demonstrates: enums, pattern matching, memoization, type annotations
+
+import core
+
+// Recursive Fibonacci with memoization
+pub fn fib(n: number) -> number {
+  // Guard clause for invalid input
+  guard n >= 0 else {
+    panic("fib: n must be non-negative")
+  }
+
+  // Base cases via pattern matching
+  match n {
+    0 => 0,
+    1 => 1,
+    _ => fib(n - 1) + fib(n - 2),
+  }
+}
+
+// Iterative Fibonacci (O(n) time, O(1) space)
+pub fn fib_iter(n: number) -> number {
+  guard n >= 0 else { panic("fib_iter: n must be non-negative") }
+
+  if n <= 1 { return n }
+
+  let a = 0
+  let b = 1
+  for _ in 2..(n + 1) {
+    const temp = a + b
+    a = b
+    b = temp
+  }
+  return b
+}
+
+// Fast doubling method (O(log n))
+pub fn fib_fast(n: number) -> number {
+  guard n >= 0 else { panic("fib_fast: n must be non-negative") }
+
+  fn helper(k: number) -> { a: number, b: number } {
+    if k == 0 {
+      return { a: 0, b: 1 }
+    }
+
+    const half = helper(math.floor(k / 2))
+    const c = half.a * (2 * half.b - half.a)
+    const d = half.a * half.a + half.b * half.b
+
+    if k % 2 == 0 {
+      return { a: c, b: d }
+    } else {
+      return { a: d, b: c + d }
+    }
+  }
+
+  return helper(n).a
+}
+
+// Memoized version
+pub fn fib_memoized() -> fn(n: number) -> number {
+  let cache: Map<number, number> = Map.new()
+
+  return fn(n: number) -> number {
+    if cache.has(n) {
+      return cache.get(n)
+    }
+
+    const result = match n {
+      0 => 0,
+      1 => 1,
+      _ => fib_memoized()(n - 1) + fib_memoized()(n - 2),
+    }
+
+    cache.set(n, result)
+    return result
+  }
+}
+
+// Benchmark all versions
+fn main() -> nil {
+  const n = 30
+
+  println("=== Fibonacci Benchmark ===")
+  println("n =", n)
+  println()
+
+  const r1 = benchmark("recursive", fn() -> number { return fib(n) }, 10)
+  println("Recursive:", r1.total_ms, "ms")
+
+  const r2 = benchmark("iterative", fn() -> number { return fib_iter(n) }, 1000)
+  println("Iterative:", r2.total_ms, "ms")
+
+  const r3 = benchmark("fast doubling", fn() -> number { return fib_fast(n) }, 1000)
+  println("Fast Doubling:", r3.total_ms, "ms")
+
+  const memo = fib_memoized()
+  const r4 = benchmark("memoized", fn() -> number { return memo(n) }, 1000)
+  println("Memoized:", r4.total_ms, "ms")
+
+  println()
+  println("Result:", fib_fast(n))
+}
