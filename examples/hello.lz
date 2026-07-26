@@ -1,0 +1,23 @@
+// hello.lz - Your first Luazi program
+// Compile: luazi compile hello.lz
+// Run: luazi run hello.lz
+
+import core
+import math
+
+// Simple greeting
+fn greet(name: string) -> string {
+  return format("Hello, {name}!")
+}
+
+// Main entry point
+fn main() -> nil {
+  const message = greet("Luazi")
+  println(message)
+
+  // Type inference works too
+  let inferred = "This type is inferred"
+  println(inferred)
+}
+
+main()
