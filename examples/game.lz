@@ -1,0 +1,307 @@
+// game.lz - Game development example
+// Demonstrates: structs, traits, impl, async, vectors, game loop
+
+import core
+import math
+
+// ============================================================================
+// GAME OBJECT SYSTEM
+// ============================================================================
+
+pub trait GameObject {
+  fn update(self, dt: number) -> nil
+  fn render(self) -> nil
+  fn get_position(self) -> Vec3
+}
+
+pub trait Collidable {
+  fn get_bounds(self) -> { min: Vec3, max: Vec3 }
+  fn on_collision(self, other: ref Collidable) -> nil
+}
+
+// ============================================================================
+// PLAYER
+// ============================================================================
+
+pub struct Player {
+  position: Vec3 = Vec3.new(0, 0, 0),
+  velocity: Vec3 = Vec3.new(0, 0, 0),
+  health: number = 100,
+  speed: number = 10,
+  jump_force: number = 15,
+  is_grounded: bool = false,
+
+  // Input state
+  input_forward: bool = false,
+  input_backward: bool = false,
+  input_left: bool = false,
+  input_right: bool = false,
+  input_jump: bool = false,
+}
+
+impl GameObject for Player {
+  fn update(self, dt: number) -> nil {
+    // Apply input
+    let move_dir = Vec3.new(0, 0, 0)
+    if self.input_forward { move_dir.z += 1 }
+    if self.input_backward { move_dir.z -= 1 }
+    if self.input_left { move_dir.x -= 1 }
+    if self.input_right { move_dir.x += 1 }
+
+    if move_dir.length() > 0 {
+      move_dir = move_dir.normalize()
+      self.velocity.x = move_dir.x * self.speed
+      self.velocity.z = move_dir.z * self.speed
+    } else {
+      self.velocity.x = 0
+      self.velocity.z = 0
+    }
+
+    // Jump
+    if self.input_jump && self.is_grounded {
+      self.velocity.y = self.jump_force
+      self.is_grounded = false
+    }
+
+    // Gravity
+    self.velocity.y -= 30 * dt
+
+    // Apply velocity
+    self.position = self.position.add(self.velocity.mul(dt))
+
+    // Ground collision
+    if self.position.y < 0 {
+      self.position.y = 0
+      self.velocity.y = 0
+      self.is_grounded = true
+    }
+  }
+
+  fn render(self) -> nil {
+    println("Rendering player at", self.position.to_string())
+  }
+
+  fn get_position(self) -> Vec3 {
+    return self.position
+  }
+}
+
+impl Collidable for Player {
+  fn get_bounds(self) -> { min: Vec3, max: Vec3 } {
+    const half_size = Vec3.new(0.5, 1, 0.5)
+    return {
+      min: self.position.sub(half_size),
+      max: self.position.add(half_size),
+    }
+  }
+
+  fn on_collision(self, other: ref Collidable) -> nil {
+    println("Player collided with something!")
+  }
+}
+
+// ============================================================================
+// ENEMY
+// ============================================================================
+
+pub struct Enemy {
+  position: Vec3 = Vec3.new(0, 0, 0),
+  health: number = 50,
+  damage: number = 10,
+  detection_range: number = 20,
+  attack_range: number = 2,
+  target: Option<Player> = Option.None,
+}
+
+impl GameObject for Enemy {
+  fn update(self, dt: number) -> nil {
+    if self.target is Option.Some(player) {
+      const dir = player.position.sub(self.position)
+      const dist = dir.length()
+
+      if dist < self.detection_range {
+        if dist > self.attack_range {
+          // Chase player
+          const move = dir.normalize().mul(5 * dt)
+          self.position = self.position.add(move)
+        } else {
+          // Attack
+          println("Enemy attacking player!")
+        }
+      }
+    }
+  }
+
+  fn render(self) -> nil {
+    println("Rendering enemy at", self.position.to_string())
+  }
+
+  fn get_position(self) -> Vec3 {
+    return self.position
+  }
+}
+
+impl Collidable for Enemy {
+  fn get_bounds(self) -> { min: Vec3, max: Vec3 } {
+    const half_size = Vec3.new(0.5, 1, 0.5)
+    return {
+      min: self.position.sub(half_size),
+      max: self.position.add(half_size),
+    }
+  }
+
+  fn on_collision(self, other: ref Collidable) -> nil {
+    println("Enemy collided!")
+  }
+}
+
+// ============================================================================
+// GAME LOOP
+// ============================================================================
+
+pub struct Game {
+  objects: [GameObject] = [],
+  collidables: [Collidable] = [],
+  running: bool = false,
+  fps: number = 60,
+}
+
+impl Game {
+  fn add_object(self, obj: GameObject) -> nil {
+    self.objects.push(obj)
+    if obj is Collidable {
+      self.collidables.push(obj as Collidable)
+    }
+  }
+
+  fn update(self, dt: number) -> nil {
+    for obj in self.objects {
+      obj.update(dt)
+    }
+
+    // Collision detection
+    for i in 0..len(self.collidables) {
+      for j in (i + 1)..len(self.collidables) {
+        const a = self.collidables[i]
+        const b = self.collidables[j]
+
+        if check_collision(a, b) {
+          a.on_collision(&b)
+          b.on_collision(&a)
+        }
+      }
+    }
+  }
+
+  fn render(self) -> nil {
+    for obj in self.objects {
+      obj.render()
+    }
+  }
+
+  fn run(self) -> nil {
+    self.running = true
+    let last_time = time.now()
+
+    while self.running {
+      const current_time = time.now()
+      const dt = (current_time - last_time) / 1000.0
+      last_time = current_time
+
+      self.update(dt)
+      self.render()
+
+      // Frame limit
+      const frame_time = 1000.0 / self.fps
+      const elapsed = time.now() - current_time
+      if elapsed < frame_time {
+        time.sleep(frame_time - elapsed)
+      }
+    }
+  }
+}
+
+fn check_collision(a: Collidable, b: Collidable) -> bool {
+  const bounds_a = a.get_bounds()
+  const bounds_b = b.get_bounds()
+
+  return bounds_a.min.x <= bounds_b.max.x && bounds_a.max.x >= bounds_b.min.x &&
+         bounds_a.min.y <= bounds_b.max.y && bounds_a.max.y >= bounds_b.min.y &&
+         bounds_a.min.z <= bounds_b.max.z && bounds_a.max.z >= bounds_b.min.z
+}
+
+// ============================================================================
+// ASYNC GAME LOADING
+// ============================================================================
+
+async fn load_level(path: string) -> Result<[{ position: Vec3, type: string }], string] {
+  // Simulate async file loading
+  await time.sleep_async(100)
+
+  return Result.Ok([
+    { position: Vec3.new(0, 0, 0), type: "spawn" },
+    { position: Vec3.new(10, 0, 5), type: "enemy" },
+    { position: Vec3.new(-5, 0, -3), type: "pickup" },
+  ])
+}
+
+async fn load_assets() -> Result<nil, string> {
+  await time.sleep_async(50)
+  println("Assets loaded!")
+  return Result.Ok(nil)
+}
+
+// ============================================================================
+// MAIN
+// ============================================================================
+
+async fn main() -> nil {
+  println("=== Luazi Game Engine Demo ===")
+  println()
+
+  // Load level asynchronously
+  println("Loading level...")
+  const level_data = await load_level("levels/level1.json")
+
+  match level_data {
+    Result.Ok(data) => {
+      println("Level loaded with", len(data), "objects")
+
+      const game = Game {}
+
+      // Spawn player
+      const player = Player {
+        position: Vec3.new(0, 0, 0),
+      }
+      game.add_object(player)
+
+      // Spawn enemies
+      for obj in data {
+        if obj.type == "enemy" {
+          const enemy = Enemy {
+            position: obj.position,
+            target: Option.Some(player),
+          }
+          game.add_object(enemy)
+        }
+      }
+
+      println()
+      println("Starting game loop (3 frames)...")
+
+      // Run a few frames
+      for _ in 0..3 {
+        game.update(1.0 / 60.0)
+        println("---")
+      }
+
+      println()
+      println("Game demo complete!")
+    },
+    Result.Err(error) => {
+      println("Failed to load level:", error)
+    },
+  }
+}
+
+main()
