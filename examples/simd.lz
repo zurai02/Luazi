@@ -1,0 +1,185 @@
+// simd.lz - SIMD vector operations demo
+// Demonstrates: SIMD operations, performance comparison
+
+import core
+import math
+
+// ============================================================================
+// VECTOR MATH WITH SIMD
+// ============================================================================
+
+fn vector_add_scalar(a: [number], b: [number]) -> [number] {
+  let result: [number] = []
+  for i in 0..len(a) {
+    result.push(a[i] + b[i])
+  }
+  return result
+}
+
+fn vector_add_simd(a: [number; 4], b: [number; 4]) -> [number; 4] {
+  // Uses WASM SIMD128 - 4x faster than scalar
+  return math.simd_add(a, b)
+}
+
+fn vector_mul_simd(a: [number; 4], b: [number; 4]) -> [number; 4] {
+  return math.simd_mul(a, b)
+}
+
+fn vector_dot_simd(a: [number; 4], b: [number; 4]) -> number {
+  return math.simd_dot(a, b)
+}
+
+// ============================================================================
+// MATRIX OPERATIONS
+// ============================================================================
+
+fn matrix_mul_scalar(a: [[number]], b: [[number]]) -> [[number]] {
+  const n = len(a)
+  let result: [[number]] = repeat(repeat(0, n), n)
+
+  for i in 0..n {
+    for j in 0..n {
+      let sum = 0.0
+      for k in 0..n {
+        sum += a[i][k] * b[k][j]
+      }
+      result[i][j] = sum
+    }
+  }
+
+  return result
+}
+
+// ============================================================================
+// PARTICLE SYSTEM
+// ============================================================================
+
+pub struct Particle {
+  position: Vec3 = Vec3.new(0, 0, 0),
+  velocity: Vec3 = Vec3.new(0, 0, 0),
+  acceleration: Vec3 = Vec3.new(0, -9.8, 0),
+  life: number = 1.0,
+  max_life: number = 1.0,
+}
+
+pub struct ParticleSystem {
+  particles: [Particle] = [],
+  max_particles: number = 1000,
+}
+
+impl ParticleSystem {
+  fn spawn(self, position: Vec3, velocity: Vec3, life: number = 1.0) -> nil {
+    if len(self.particles) >= self.max_particles {
+      return
+    }
+
+    self.particles.push(Particle {
+      position: position,
+      velocity: velocity,
+      life: life,
+      max_life: life,
+    })
+  }
+
+  fn update(self, dt: number) -> nil {
+    let alive: [Particle] = []
+
+    for p in self.particles {
+      // Update physics
+      p.velocity = p.velocity.add(p.acceleration.mul(dt))
+      p.position = p.position.add(p.velocity.mul(dt))
+      p.life -= dt
+
+      if p.life > 0 {
+        alive.push(p)
+      }
+    }
+
+    self.particles = alive
+  }
+
+  fn render(self) -> nil {
+    for p in self.particles {
+      const alpha = p.life / p.max_life
+      println("Particle at", p.position.to_string(), "alpha:", alpha)
+    }
+  }
+}
+
+// ============================================================================
+// BENCHMARK
+// ============================================================================
+
+fn benchmark_simd() -> nil {
+  println("=== SIMD Benchmark ===")
+  println()
+
+  const iterations = 100000
+
+  // Scalar addition
+  const scalar_result = benchmark("scalar add", fn() -> nil {
+    const a = [1.0, 2.0, 3.0, 4.0]
+    const b = [5.0, 6.0, 7.0, 8.0]
+    const c = vector_add_scalar(a, b)
+  }, iterations)
+
+  println("Scalar add:", scalar_result.ops_per_sec, "ops/sec")
+
+  // SIMD addition
+  const simd_result = benchmark("SIMD add", fn() -> nil {
+    const a: [number; 4] = [1.0, 2.0, 3.0, 4.0]
+    const b: [number; 4] = [5.0, 6.0, 7.0, 8.0]
+    const c = vector_add_simd(a, b)
+  }, iterations)
+
+  println("SIMD add:", simd_result.ops_per_sec, "ops/sec")
+  println("Speedup:", (simd_result.ops_per_sec / scalar_result.ops_per_sec).toFixed(2), "x")
+  println()
+
+  // Matrix multiplication
+  const matrix_result = benchmark("4x4 matrix mul", fn() -> nil {
+    const m1 = Mat4.identity()
+    const m2 = Mat4.translate(1, 2, 3)
+    const m3 = m1.mul(m2)
+  }, iterations)
+
+  println("Matrix multiply:", matrix_result.ops_per_sec, "ops/sec")
+}
+
+// ============================================================================
+// MAIN
+// ============================================================================
+
+fn main() -> nil {
+  benchmark_simd()
+
+  println()
+  println("=== Particle System Demo ===")
+  println()
+
+  const ps = ParticleSystem {
+    max_particles: 100,
+  }
+
+  // Spawn particles
+  for _ in 0..5 {
+    ps.spawn(
+      Vec3.new(0, 10, 0),
+      Vec3.new(
+        math.random_range(-5, 5),
+        math.random_range(5, 15),
+        math.random_range(-5, 5)
+      )
+    )
+  }
+
+  // Simulate
+  for i in 0..10 {
+    println("Frame", i)
+    ps.update(1.0 / 60.0)
+    ps.render()
+    println()
+  }
+}
+
+main()
