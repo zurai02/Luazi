@@ -1,0 +1,1442 @@
+--!optimize 2
+--!strict
+--native
+--[[
+	Celestial Interface Suite
+	Inspired by Rayfield (by Sirius)
+
+	Built from scratch — no model dependency.
+	All UI constructed programmatically.
+	Compatible with Rayfield's scripting API.
+]]
+
+------------------------------------------------------------------------
+-- SERVICES
+------------------------------------------------------------------------
+local function gs(n)
+	local s = game:GetService(n)
+	return if cloneref then cloneref(s) else s
+end
+local UIS     = gs("UserInputService")
+local TS      = gs("TweenService")
+local Players = gs("Players")
+local CoreGui = gs("CoreGui")
+local HTTP    = gs("HttpService")
+local Run     = gs("RunService")
+local TXS     = gs("TextService")
+local SndSvc  = gs("SoundService")
+
+------------------------------------------------------------------------
+-- SAFE HELPERS
+------------------------------------------------------------------------
+local function safe(fn, ...)
+	if type(fn) ~= "function" then return nil end
+	local ok, r = pcall(fn, ...) if not ok then warn("[Celestial] "..tostring(r)) end
+	return ok and r or nil
+end
+local function folder(p)
+	if isfolder and not safe(isfolder, p) then safe(makefolder, p) end
+end
+local function tf(inst, info, goals)
+	local t = TS:Create(inst, info, goals) t:Play() return t
+end
+
+local TF  = TweenInfo.new(0.12, Enum.EasingStyle.Quint,  Enum.EasingDirection.Out)
+local TM  = TweenInfo.new(0.22, Enum.EasingStyle.Quint,  Enum.EasingDirection.Out)
+local TS2 = TweenInfo.new(0.38, Enum.EasingStyle.Quint,  Enum.EasingDirection.Out)
+local TSP = TweenInfo.new(0.45, Enum.EasingStyle.Back,   Enum.EasingDirection.Out)
+local TSO = TweenInfo.new(0.50, Enum.EasingStyle.Quart,  Enum.EasingDirection.Out)
+local TEX = TweenInfo.new(0.60, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out)
+
+local function mk(cls, p, par)
+	local i = Instance.new(cls)
+	for k, v in pairs(p or {}) do pcall(function() (i::any)[k] = v end) end
+	if par then i.Parent = par end
+	return i
+end
+local function cor(r, p) return mk("UICorner", {CornerRadius=UDim.new(0,r)}, p) end
+local function str(c, th, tr, p)
+	return mk("UIStroke", {Color=c, Thickness=th or 1, Transparency=tr or 0, ApplyStrokeMode=Enum.ApplyStrokeMode.Border}, p)
+end
+local function ll(dir, sort, sp, p)
+	return mk("UIListLayout", {FillDirection=dir or Enum.FillDirection.Vertical, SortOrder=sort or Enum.SortOrder.LayoutOrder, Padding=UDim.new(0,sp or 6)}, p)
+end
+local function pd(l,r,t,b,p)
+	return mk("UIPadding", {PaddingLeft=UDim.new(0,l or 0), PaddingRight=UDim.new(0,r or 0), PaddingTop=UDim.new(0,t or 0), PaddingBottom=UDim.new(0,b or 0)}, p)
+end
+local function grad(rot, kp, tp, p)
+	return mk("UIGradient", {Rotation=rot or 0, Color=kp, Transparency=tp or NumberSequence.new(0)}, p)
+end
+
+------------------------------------------------------------------------
+-- CONSTANTS
+------------------------------------------------------------------------
+local VERSION   = "1.0.0"
+local FOLDER    = "Celestial"
+local CFG_DIR   = FOLDER.."/Configs"
+local KEY_DIR   = FOLDER.."/Keys"
+local DISC_DIR  = FOLDER.."/Discord"
+local EXT       = ".json"
+
+local SND_CLICK  = "rbxassetid://6895079853"
+local SND_TOGGLE = "rbxassetid://6895079966"
+local SND_NOTIFY = "rbxassetid://6895079591"
+
+local function playSound(id, vol)
+	safe(function()
+		local s = Instance.new("Sound")
+		s.SoundId = id s.Volume = vol or 0.35
+		s.Parent = SndSvc s:Play()
+		game:GetService("Debris"):AddItem(s, 2)
+	end)
+end
+
+------------------------------------------------------------------------
+-- THEMES (Celestial + Rayfield-compatible names)
+------------------------------------------------------------------------
+local function rgb(r,g,b) return Color3.fromRGB(r,g,b) end
+
+local Themes = {
+	Celestial = {
+		-- Celestial-style names
+		Accent=rgb(138,107,255), AccentDim=rgb(96,74,200), AccentHover=rgb(162,135,255), AccentText=rgb(255,255,255),
+		WindowBg=rgb(17,15,26), WindowBg2=rgb(11,10,19), WindowTrans=0.03,
+		Surface=rgb(255,255,255), SurfaceTrans=0.94, SurfaceDeep=rgb(255,255,255), SurfaceDeepTrans=0.905,
+		TopbarBg=rgb(20,18,30), TopbarTrans=0.25, SidebarBg=rgb(15,13,23), SidebarTrans=0.35,
+		Divider=rgb(255,255,255), DividerTrans=0.90,
+		TextPrimary=rgb(247,246,255), TextSecondary=rgb(196,191,222), TextMuted=rgb(140,134,170),
+		StrokeLight=rgb(255,255,255), StrokeLightTrans=0.88, StrokeDark=rgb(110,95,175), StrokeDarkTrans=0.68,
+		Toggle=rgb(138,107,255), ToggleOff=rgb(58,54,80),
+		SliderFill=rgb(138,107,255), SliderTrack=rgb(46,42,68),
+		Ripple=rgb(205,190,255), Shadow=rgb(3,2,10), Glow=rgb(138,107,255),
+		-- Rayfield-compatible names
+		TextColor=rgb(247,246,255),
+		Background=rgb(17,15,26), Topbar=rgb(20,18,30), Shadow2=rgb(3,2,10),
+		ElementBackground=rgb(30,28,46), ElementBackgroundHover=rgb(38,35,58),
+		SecondaryElementBackground=rgb(22,20,36), ElementStroke=rgb(60,55,90), SecondaryElementStroke=rgb(50,45,75),
+		SliderBackground=rgb(138,107,255), SliderProgress=rgb(138,107,255), SliderStroke=rgb(162,135,255),
+		ToggleBackground=rgb(30,28,46), ToggleEnabled=rgb(138,107,255), ToggleDisabled=rgb(58,54,80),
+		ToggleEnabledStroke=rgb(162,135,255), ToggleDisabledStroke=rgb(80,75,110),
+		ToggleEnabledOuterStroke=rgb(100,90,160), ToggleDisabledOuterStroke=rgb(45,42,65),
+		DropdownSelected=rgb(50,46,78), DropdownUnselected=rgb(30,28,46),
+		InputBackground=rgb(25,23,40), InputStroke=rgb(70,60,110), PlaceholderColor=rgb(140,134,170),
+		TabBackground=rgb(40,36,64), TabStroke=rgb(55,50,85), TabBackgroundSelected=rgb(138,107,255),
+		TabTextColor=rgb(196,191,222), SelectedTabTextColor=rgb(255,255,255),
+	},
+	Default = {
+		Accent=rgb(80,80,220), AccentDim=rgb(55,55,180), AccentHover=rgb(100,100,240), AccentText=rgb(255,255,255),
+		WindowBg=rgb(25,25,25), WindowBg2=rgb(18,18,18), WindowTrans=0.0,
+		Surface=rgb(255,255,255), SurfaceTrans=0.97, SurfaceDeep=rgb(255,255,255), SurfaceDeepTrans=0.95,
+		TopbarBg=rgb(34,34,34), TopbarTrans=0.0, SidebarBg=rgb(28,28,28), SidebarTrans=0.0,
+		Divider=rgb(60,60,60), DividerTrans=0.0,
+		TextPrimary=rgb(240,240,240), TextSecondary=rgb(200,200,200), TextMuted=rgb(150,150,150),
+		StrokeLight=rgb(60,60,60), StrokeLightTrans=0.0, StrokeDark=rgb(50,50,50), StrokeDarkTrans=0.0,
+		Toggle=rgb(0,146,214), ToggleOff=rgb(100,100,100),
+		SliderFill=rgb(50,138,220), SliderTrack=rgb(50,50,50),
+		Ripple=rgb(150,160,220), Shadow=rgb(10,10,10), Glow=rgb(50,100,200),
+		TextColor=rgb(240,240,240),
+		Background=rgb(25,25,25), Topbar=rgb(34,34,34), Shadow2=rgb(20,20,20),
+		ElementBackground=rgb(35,35,35), ElementBackgroundHover=rgb(40,40,40),
+		SecondaryElementBackground=rgb(25,25,25), ElementStroke=rgb(50,50,50), SecondaryElementStroke=rgb(40,40,40),
+		SliderBackground=rgb(50,138,220), SliderProgress=rgb(50,138,220), SliderStroke=rgb(58,163,255),
+		ToggleBackground=rgb(30,30,30), ToggleEnabled=rgb(0,146,214), ToggleDisabled=rgb(100,100,100),
+		ToggleEnabledStroke=rgb(0,170,255), ToggleDisabledStroke=rgb(125,125,125),
+		ToggleEnabledOuterStroke=rgb(100,100,100), ToggleDisabledOuterStroke=rgb(65,65,65),
+		DropdownSelected=rgb(40,40,40), DropdownUnselected=rgb(30,30,30),
+		InputBackground=rgb(30,30,30), InputStroke=rgb(65,65,65), PlaceholderColor=rgb(178,178,178),
+		TabBackground=rgb(80,80,80), TabStroke=rgb(85,85,85), TabBackgroundSelected=rgb(210,210,210),
+		TabTextColor=rgb(240,240,240), SelectedTabTextColor=rgb(50,50,50),
+	},
+	Ocean = {
+		Accent=rgb(28,214,175), AccentDim=rgb(18,150,122), AccentHover=rgb(60,235,195), AccentText=rgb(6,24,20),
+		WindowBg=rgb(9,22,20), WindowBg2=rgb(6,15,14), WindowTrans=0.03,
+		Surface=rgb(255,255,255), SurfaceTrans=0.94, SurfaceDeep=rgb(255,255,255), SurfaceDeepTrans=0.905,
+		TopbarBg=rgb(11,26,24), TopbarTrans=0.25, SidebarBg=rgb(8,19,18), SidebarTrans=0.35,
+		Divider=rgb(255,255,255), DividerTrans=0.90,
+		TextPrimary=rgb(222,252,244), TextSecondary=rgb(158,212,198), TextMuted=rgb(104,156,145),
+		StrokeLight=rgb(255,255,255), StrokeLightTrans=0.88, StrokeDark=rgb(26,150,124), StrokeDarkTrans=0.62,
+		Toggle=rgb(28,214,175), ToggleOff=rgb(42,74,68), SliderFill=rgb(28,214,175), SliderTrack=rgb(26,58,52),
+		Ripple=rgb(180,255,235), Shadow=rgb(1,8,7), Glow=rgb(28,214,175),
+		TextColor=rgb(222,252,244), Background=rgb(9,22,20), Topbar=rgb(11,26,24), Shadow2=rgb(1,8,7),
+		ElementBackground=rgb(18,44,40), ElementBackgroundHover=rgb(24,55,50),
+		SecondaryElementBackground=rgb(12,30,28), ElementStroke=rgb(35,80,70), SecondaryElementStroke=rgb(28,65,58),
+		SliderBackground=rgb(0,140,110), SliderProgress=rgb(28,214,175), SliderStroke=rgb(60,235,195),
+		ToggleBackground=rgb(18,44,40), ToggleEnabled=rgb(28,214,175), ToggleDisabled=rgb(42,74,68),
+		ToggleEnabledStroke=rgb(60,235,195), ToggleDisabledStroke=rgb(55,90,82),
+		ToggleEnabledOuterStroke=rgb(22,160,130), ToggleDisabledOuterStroke=rgb(30,56,50),
+		DropdownSelected=rgb(24,55,50), DropdownUnselected=rgb(18,44,40),
+		InputBackground=rgb(12,30,28), InputStroke=rgb(35,80,70), PlaceholderColor=rgb(104,156,145),
+		TabBackground=rgb(18,44,40), TabStroke=rgb(35,80,70), TabBackgroundSelected=rgb(28,214,175),
+		TabTextColor=rgb(158,212,198), SelectedTabTextColor=rgb(6,24,20),
+	},
+	Amethyst = {
+		Accent=rgb(172,122,255), AccentDim=rgb(120,84,200), AccentHover=rgb(192,148,255), AccentText=rgb(255,255,255),
+		WindowBg=rgb(20,14,30), WindowBg2=rgb(13,9,20), WindowTrans=0.02,
+		Surface=rgb(255,255,255), SurfaceTrans=0.955, SurfaceDeep=rgb(255,255,255), SurfaceDeepTrans=0.925,
+		TopbarBg=rgb(28,18,42), TopbarTrans=0.2, SidebarBg=rgb(20,13,32), SidebarTrans=0.3,
+		Divider=rgb(255,255,255), DividerTrans=0.92,
+		TextPrimary=rgb(240,235,255), TextSecondary=rgb(196,180,230), TextMuted=rgb(140,125,175),
+		StrokeLight=rgb(255,255,255), StrokeLightTrans=0.88, StrokeDark=rgb(120,80,200), StrokeDarkTrans=0.68,
+		Toggle=rgb(172,122,255), ToggleOff=rgb(60,42,90), SliderFill=rgb(172,122,255), SliderTrack=rgb(44,30,70),
+		Ripple=rgb(215,195,255), Shadow=rgb(5,2,12), Glow=rgb(172,122,255),
+		TextColor=rgb(240,235,255), Background=rgb(20,14,30), Topbar=rgb(28,18,42), Shadow2=rgb(5,2,12),
+		ElementBackground=rgb(38,26,58), ElementBackgroundHover=rgb(48,34,72),
+		SecondaryElementBackground=rgb(28,18,44), ElementStroke=rgb(75,50,110), SecondaryElementStroke=rgb(60,40,90),
+		SliderBackground=rgb(120,60,180), SliderProgress=rgb(172,122,255), SliderStroke=rgb(192,148,255),
+		ToggleBackground=rgb(38,26,58), ToggleEnabled=rgb(172,122,255), ToggleDisabled=rgb(60,42,90),
+		ToggleEnabledStroke=rgb(192,148,255), ToggleDisabledStroke=rgb(80,60,115),
+		ToggleEnabledOuterStroke=rgb(130,80,200), ToggleDisabledOuterStroke=rgb(48,32,70),
+		DropdownSelected=rgb(48,34,72), DropdownUnselected=rgb(38,26,58),
+		InputBackground=rgb(28,18,44), InputStroke=rgb(75,50,110), PlaceholderColor=rgb(140,125,175),
+		TabBackground=rgb(50,34,78), TabStroke=rgb(75,50,110), TabBackgroundSelected=rgb(172,122,255),
+		TabTextColor=rgb(196,180,230), SelectedTabTextColor=rgb(255,255,255),
+	},
+	DarkBlue = {
+		Accent=rgb(50,138,220), AccentDim=rgb(30,100,175), AccentHover=rgb(75,165,245), AccentText=rgb(255,255,255),
+		WindowBg=rgb(18,22,28), WindowBg2=rgb(12,16,20), WindowTrans=0.02,
+		Surface=rgb(255,255,255), SurfaceTrans=0.955, SurfaceDeep=rgb(255,255,255), SurfaceDeepTrans=0.93,
+		TopbarBg=rgb(24,30,38), TopbarTrans=0.2, SidebarBg=rgb(18,24,32), SidebarTrans=0.3,
+		Divider=rgb(255,255,255), DividerTrans=0.92,
+		TextPrimary=rgb(230,235,245), TextSecondary=rgb(180,190,215), TextMuted=rgb(130,140,170),
+		StrokeLight=rgb(255,255,255), StrokeLightTrans=0.88, StrokeDark=rgb(40,80,140), StrokeDarkTrans=0.65,
+		Toggle=rgb(0,120,210), ToggleOff=rgb(40,55,80), SliderFill=rgb(0,120,210), SliderTrack=rgb(28,40,60),
+		Ripple=rgb(140,185,240), Shadow=rgb(5,8,14), Glow=rgb(0,120,210),
+		TextColor=rgb(230,235,245), Background=rgb(18,22,28), Topbar=rgb(24,30,38), Shadow2=rgb(5,8,14),
+		ElementBackground=rgb(28,35,46), ElementBackgroundHover=rgb(36,44,58),
+		SecondaryElementBackground=rgb(20,26,34), ElementStroke=rgb(40,56,80), SecondaryElementStroke=rgb(32,46,66),
+		SliderBackground=rgb(0,90,180), SliderProgress=rgb(0,120,210), SliderStroke=rgb(0,150,240),
+		ToggleBackground=rgb(28,35,46), ToggleEnabled=rgb(0,120,210), ToggleDisabled=rgb(50,65,90),
+		ToggleEnabledStroke=rgb(0,150,240), ToggleDisabledStroke=rgb(60,78,108),
+		ToggleEnabledOuterStroke=rgb(0,90,180), ToggleDisabledOuterStroke=rgb(38,50,72),
+		DropdownSelected=rgb(36,44,58), DropdownUnselected=rgb(28,35,46),
+		InputBackground=rgb(20,26,34), InputStroke=rgb(40,56,80), PlaceholderColor=rgb(130,140,170),
+		TabBackground=rgb(32,42,56), TabStroke=rgb(44,58,80), TabBackgroundSelected=rgb(40,100,175),
+		TabTextColor=rgb(180,190,215), SelectedTabTextColor=rgb(255,255,255),
+	},
+	Bloom = {
+		Accent=rgb(255,120,160), AccentDim=rgb(210,80,120), AccentHover=rgb(255,150,185), AccentText=rgb(255,255,255),
+		WindowBg=rgb(30,18,22), WindowBg2=rgb(22,12,16), WindowTrans=0.03,
+		Surface=rgb(255,255,255), SurfaceTrans=0.94, SurfaceDeep=rgb(255,255,255), SurfaceDeepTrans=0.91,
+		TopbarBg=rgb(38,22,28), TopbarTrans=0.25, SidebarBg=rgb(28,16,20), SidebarTrans=0.35,
+		Divider=rgb(255,255,255), DividerTrans=0.90,
+		TextPrimary=rgb(255,240,245), TextSecondary=rgb(230,200,215), TextMuted=rgb(175,145,160),
+		StrokeLight=rgb(255,255,255), StrokeLightTrans=0.88, StrokeDark=rgb(200,80,120), StrokeDarkTrans=0.65,
+		Toggle=rgb(255,120,160), ToggleOff=rgb(90,45,60), SliderFill=rgb(255,120,160), SliderTrack=rgb(65,30,42),
+		Ripple=rgb(255,200,220), Shadow=rgb(14,5,8), Glow=rgb(255,120,160),
+		TextColor=rgb(255,240,245), Background=rgb(30,18,22), Topbar=rgb(38,22,28), Shadow2=rgb(14,5,8),
+		ElementBackground=rgb(50,28,36), ElementBackgroundHover=rgb(62,36,46),
+		SecondaryElementBackground=rgb(38,20,28), ElementStroke=rgb(100,50,70), SecondaryElementStroke=rgb(80,40,56),
+		SliderBackground=rgb(210,80,120), SliderProgress=rgb(255,120,160), SliderStroke=rgb(255,150,185),
+		ToggleBackground=rgb(50,28,36), ToggleEnabled=rgb(255,120,160), ToggleDisabled=rgb(90,45,60),
+		ToggleEnabledStroke=rgb(255,150,185), ToggleDisabledStroke=rgb(110,60,78),
+		ToggleEnabledOuterStroke=rgb(200,80,120), ToggleDisabledOuterStroke=rgb(68,34,46),
+		DropdownSelected=rgb(62,36,46), DropdownUnselected=rgb(50,28,36),
+		InputBackground=rgb(38,20,28), InputStroke=rgb(100,50,70), PlaceholderColor=rgb(175,145,160),
+		TabBackground=rgb(58,32,42), TabStroke=rgb(100,50,70), TabBackgroundSelected=rgb(255,120,160),
+		TabTextColor=rgb(230,200,215), SelectedTabTextColor=rgb(255,255,255),
+	},
+	Light = {
+		Accent=rgb(60,120,220), AccentDim=rgb(40,90,180), AccentHover=rgb(80,145,245), AccentText=rgb(255,255,255),
+		WindowBg=rgb(242,244,250), WindowBg2=rgb(228,232,242), WindowTrans=0.08,
+		Surface=rgb(0,0,0), SurfaceTrans=0.94, SurfaceDeep=rgb(0,0,0), SurfaceDeepTrans=0.92,
+		TopbarBg=rgb(255,255,255), TopbarTrans=0.15, SidebarBg=rgb(255,255,255), SidebarTrans=0.25,
+		Divider=rgb(0,0,0), DividerTrans=0.88,
+		TextPrimary=rgb(20,25,40), TextSecondary=rgb(70,80,110), TextMuted=rgb(120,130,155),
+		StrokeLight=rgb(200,210,230), StrokeLightTrans=0.0, StrokeDark=rgb(60,100,180), StrokeDarkTrans=0.65,
+		Toggle=rgb(60,120,220), ToggleOff=rgb(180,185,200), SliderFill=rgb(60,120,220), SliderTrack=rgb(200,210,230),
+		Ripple=rgb(140,175,240), Shadow=rgb(100,110,140), Glow=rgb(60,120,220),
+		TextColor=rgb(20,25,40), Background=rgb(242,244,250), Topbar=rgb(255,255,255), Shadow2=rgb(100,110,140),
+		ElementBackground=rgb(232,236,248), ElementBackgroundHover=rgb(218,224,240),
+		SecondaryElementBackground=rgb(240,242,252), ElementStroke=rgb(200,210,230), SecondaryElementStroke=rgb(208,216,234),
+		SliderBackground=rgb(150,180,230), SliderProgress=rgb(60,120,220), SliderStroke=rgb(80,145,245),
+		ToggleBackground=rgb(220,224,238), ToggleEnabled=rgb(60,120,220), ToggleDisabled=rgb(165,170,190),
+		ToggleEnabledStroke=rgb(80,145,245), ToggleDisabledStroke=rgb(180,185,205),
+		ToggleEnabledOuterStroke=rgb(100,150,220), ToggleDisabledOuterStroke=rgb(190,195,215),
+		DropdownSelected=rgb(218,224,240), DropdownUnselected=rgb(232,236,248),
+		InputBackground=rgb(240,242,252), InputStroke=rgb(190,200,225), PlaceholderColor=rgb(140,150,175),
+		TabBackground=rgb(220,226,242), TabStroke=rgb(195,206,228), TabBackgroundSelected=rgb(255,255,255),
+		TabTextColor=rgb(80,90,120), SelectedTabTextColor=rgb(20,25,40),
+	},
+}
+
+------------------------------------------------------------------------
+-- NOTIFICATION LAYER
+------------------------------------------------------------------------
+local _nScreen, _nHolder
+local function ensureNotif()
+	if _nHolder and _nHolder.Parent then return end
+	_nScreen = mk("ScreenGui", {Name="CelestialNotifs", ResetOnSpawn=false, IgnoreGuiInset=true, ZIndexBehavior=Enum.ZIndexBehavior.Sibling, DisplayOrder=900})
+	local ok = pcall(function() _nScreen.Parent = CoreGui end)
+	if not ok then pcall(function() _nScreen.Parent = Players.LocalPlayer:WaitForChild("PlayerGui") end) end
+	_nHolder = mk("Frame", {Name="Holder", Size=UDim2.new(0,310,1,-20), Position=UDim2.new(1,-326,0,10), BackgroundTransparency=1}, _nScreen)
+	local nl = ll(Enum.FillDirection.Vertical, Enum.SortOrder.LayoutOrder, 10, _nHolder)
+	nl.VerticalAlignment = Enum.VerticalAlignment.Bottom
+end
+
+------------------------------------------------------------------------
+-- CELESTIAL LIBRARY TABLE
+------------------------------------------------------------------------
+local Celestial = { Flags = {}, Theme = Themes }
+Celestial.__index = Celestial
+local _activeCfgFile = nil
+local _destroyed = false
+local _keybindConns = {}
+local _hidden = false
+
+------------------------------------------------------------------------
+-- PACK / UNPACK COLOR (Rayfield config compatibility)
+------------------------------------------------------------------------
+local function packColor(c) return {R=c.R*255, G=c.G*255, B=c.B*255} end
+local function unpackColor(c) return Color3.fromRGB(c.R, c.G, c.B) end
+
+------------------------------------------------------------------------
+-- SAVE CONFIG
+------------------------------------------------------------------------
+local _cfgEnabled = false
+local _globalLoaded = false
+local function saveConfig()
+	if not _cfgEnabled or not _globalLoaded or not _activeCfgFile then return end
+	local data = {}
+	for flag, elem in pairs(Celestial.Flags) do
+		if elem.Type == "ColorPicker" then
+			data[flag] = packColor(elem.Color)
+		else
+			local v = elem.CurrentValue
+			if typeof(v) == "boolean" then
+				data[flag] = v
+			else
+				data[flag] = v or elem.CurrentKeybind or elem.CurrentOption or elem.Color
+			end
+		end
+	end
+	safe(writefile, _activeCfgFile, HTTP:JSONEncode(data))
+end
+
+------------------------------------------------------------------------
+-- LOAD CONFIG (called at end of script, Rayfield-compatible)
+------------------------------------------------------------------------
+function Celestial:LoadConfiguration()
+	if not _cfgEnabled or not _activeCfgFile then _globalLoaded = true return end
+	if not safe(isfile, _activeCfgFile) then _globalLoaded = true return end
+	local raw = safe(readfile, _activeCfgFile)
+	if not raw then _globalLoaded = true return end
+	local ok, data = pcall(function() return HTTP:JSONDecode(raw) end)
+	if not ok then _globalLoaded = true return end
+	local changed = false
+	for flagName, flag in pairs(Celestial.Flags) do
+		local val = data[flagName]
+		if val ~= nil then
+			changed = true
+			task.spawn(function()
+				if flag.Type == "ColorPicker" then
+					flag:Set(unpackColor(val))
+				else
+					flag:Set(val)
+				end
+			end)
+		end
+	end
+	if changed then
+		self:Notify({Title="Celestial Configurations", Content="Your saved configuration has been loaded.", Duration=3})
+	end
+	_globalLoaded = true
+end
+
+-- Rayfield-style: called without colon
+function Celestial.LoadConfiguration(...)
+	return Celestial:LoadConfiguration(...)
+end
+
+------------------------------------------------------------------------
+-- NOTIFY
+------------------------------------------------------------------------
+function Celestial:Notify(opts)
+	opts = opts or {}
+	ensureNotif()
+	if not _nHolder then
+		print("[Celestial] ".. (opts.Title or "") ..": ".. (opts.Content or ""))
+		return
+	end
+	local existing = {}
+	for _, c in ipairs(_nHolder:GetChildren()) do
+		if c:IsA("Frame") then table.insert(existing, c) end
+	end
+	if #existing >= 5 then existing[1]:Destroy() end
+	playSound(SND_NOTIFY)
+
+	local T = opts.Theme and Themes[opts.Theme] or Themes.Celestial
+	local dur = opts.Duration or 4
+	local nt = opts.Type or "info"
+	local acMap = {info=T.Accent, success=rgb(58,214,130), warn=rgb(255,178,40), error=rgb(255,82,82)}
+	local ac = acMap[nt] or T.Accent
+	local iconMap = {info="i", success="✓", warn="!", error="✕"}
+
+	local card = mk("Frame", {Size=UDim2.new(1,0,0,72), BackgroundColor3=T.WindowBg, BackgroundTransparency=1}, _nHolder)
+	cor(14, card) str(T.StrokeLight, 1, T.StrokeLightTrans, card)
+	local tint = mk("Frame", {Size=UDim2.new(1,0,1,0), BackgroundColor3=T.Surface, BackgroundTransparency=T.SurfaceDeepTrans, ZIndex=0}, card) cor(14, tint)
+	local pill = mk("Frame", {Size=UDim2.new(0,3,0.62,0), Position=UDim2.new(0,10,0.19,0), BackgroundColor3=ac, ZIndex=3}, card) cor(4, pill)
+	local chip = mk("Frame", {Position=UDim2.new(0,20,0,12), Size=UDim2.new(0,26,0,26), BackgroundColor3=ac, BackgroundTransparency=0.82, ZIndex=3}, card) cor(8, chip)
+	mk("TextLabel", {Size=UDim2.new(1,0,1,0), BackgroundTransparency=1, Text=iconMap[nt] or "i", TextColor3=ac, Font=Enum.Font.GothamBlack, TextSize=14, ZIndex=4}, chip)
+	mk("TextLabel", {Position=UDim2.new(0,56,0,11), Size=UDim2.new(1,-70,0,20), BackgroundTransparency=1, Text=opts.Title or "", TextColor3=T.TextPrimary, Font=Enum.Font.GothamBold, TextSize=13, TextXAlignment=Enum.TextXAlignment.Left, ZIndex=3}, card)
+	if opts.Content and #opts.Content > 0 then
+		mk("TextLabel", {Position=UDim2.new(0,56,0,32), Size=UDim2.new(1,-70,0,30), BackgroundTransparency=1, Text=opts.Content, TextColor3=T.TextSecondary, Font=Enum.Font.Gotham, TextSize=11, TextXAlignment=Enum.TextXAlignment.Left, TextWrapped=true, ZIndex=3}, card)
+	end
+	local bt = mk("Frame", {Position=UDim2.new(0,12,1,-6), Size=UDim2.new(1,-24,0,3), BackgroundColor3=ac, BackgroundTransparency=0.82, ZIndex=3}, card) cor(2, bt)
+	local bar = mk("Frame", {Size=UDim2.new(1,0,1,0), BackgroundColor3=ac, BackgroundTransparency=0.1, ZIndex=4}, bt) cor(2, bar)
+
+	local db = mk("TextButton", {Size=UDim2.new(1,0,1,0), BackgroundTransparency=1, Text="", ZIndex=10}, card)
+	local alive = true
+	local function dismiss()
+		if not alive then return end alive = false
+		tf(card, TM, {Position=UDim2.new(1,24,0,0), BackgroundTransparency=1})
+		task.delay(0.3, function() if card and card.Parent then card:Destroy() end end)
+	end
+	db.MouseButton1Click:Connect(dismiss)
+	card.Position = UDim2.new(1,24,0,0) card.BackgroundTransparency = 1
+	tf(card, TSO, {Position=UDim2.new(0,0,0,0)})
+	tf(card, TM, {BackgroundTransparency=0.06})
+	tf(bar, TweenInfo.new(dur, Enum.EasingStyle.Linear), {Size=UDim2.new(0,0,1,0)})
+	task.delay(dur, dismiss)
+end
+
+------------------------------------------------------------------------
+-- CONFIRM MODAL
+------------------------------------------------------------------------
+function Celestial:Confirm(opts)
+	local T = self.ActiveTheme or Themes.Celestial
+	local screen = mk("ScreenGui", {Name="CelestialConfirm", ResetOnSpawn=false, IgnoreGuiInset=true, ZIndexBehavior=Enum.ZIndexBehavior.Sibling, DisplayOrder=950})
+	pcall(function() screen.Parent = CoreGui end)
+	local dim = mk("Frame", {Size=UDim2.new(1,0,1,0), BackgroundColor3=rgb(0,0,0), BackgroundTransparency=1, ZIndex=400}, screen)
+	tf(dim, TM, {BackgroundTransparency=0.5})
+	local box = mk("Frame", {Size=UDim2.new(0,320,0,0), AnchorPoint=Vector2.new(0.5,0.5), Position=UDim2.new(0.5,0,0.5,0), BackgroundColor3=T.WindowBg, BackgroundTransparency=0.04, ZIndex=401}, screen)
+	cor(14, box) str(T.StrokeLight, 1, T.StrokeLightTrans, box)
+	mk("TextLabel", {Position=UDim2.new(0,20,0,18), Size=UDim2.new(1,-40,0,22), BackgroundTransparency=1, Text=opts.Title or "Confirm?", TextColor3=T.TextPrimary, Font=Enum.Font.GothamBold, TextSize=15, TextXAlignment=Enum.TextXAlignment.Left, ZIndex=402}, box)
+	mk("TextLabel", {Position=UDim2.new(0,20,0,44), Size=UDim2.new(1,-40,0,42), BackgroundTransparency=1, Text=opts.Content or "", TextColor3=T.TextSecondary, Font=Enum.Font.Gotham, TextSize=12, TextWrapped=true, TextXAlignment=Enum.TextXAlignment.Left, ZIndex=402}, box)
+	local function fin(r)
+		tf(dim, TM, {BackgroundTransparency=1}) tf(box, TM, {BackgroundTransparency=1})
+		task.delay(0.25, function() screen:Destroy() end) safe(opts.Callback, r)
+	end
+	local cb = mk("TextButton", {Size=UDim2.new(0,120,0,36), Position=UDim2.new(0,20,1,-56), BackgroundColor3=T.ElementBackground, BackgroundTransparency=0.1, Text=opts.CancelText or "Cancel", TextColor3=T.TextSecondary, Font=Enum.Font.GothamBold, TextSize=12, AutoButtonColor=false, ZIndex=402}, box) cor(9, cb)
+	cb.MouseButton1Click:Connect(function() playSound(SND_CLICK) fin(false) end)
+	local cfb = mk("TextButton", {Size=UDim2.new(0,120,0,36), Position=UDim2.new(1,-140,1,-56), BackgroundColor3=T.Accent, Text=opts.ConfirmText or "Confirm", TextColor3=T.AccentText, Font=Enum.Font.GothamBold, TextSize=12, AutoButtonColor=false, ZIndex=402}, box) cor(9, cfb)
+	cfb.MouseButton1Click:Connect(function() playSound(SND_CLICK) fin(true) end)
+	tf(box, TSP, {Size=UDim2.new(0,320,0,150), BackgroundTransparency=0.04})
+end
+
+------------------------------------------------------------------------
+-- KEY SYSTEM (fully programmatic, no model asset)
+------------------------------------------------------------------------
+local function runKeySystem(opts, T, cb)
+	local ks = opts.KeySettings
+	if not ks then cb(true) return end
+
+	folder(FOLDER) folder(KEY_DIR)
+	local keys = type(ks.Key) == "string" and {ks.Key} or (ks.Key or {"Key"})
+	local fileName = ks.FileName or "Key"
+
+	-- Fetch keys from URLs if needed
+	if ks.GrabKeyFromSite then
+		for i, k in ipairs(keys) do
+			local ok, res = pcall(function() return game:HttpGet(k):gsub("[\n\r ]", "") end)
+			if ok then keys[i] = res end
+		end
+	end
+
+	-- Check saved key
+	local keyFile = KEY_DIR.."/"..fileName..EXT
+	if safe(isfile, keyFile) then
+		local saved = safe(readfile, keyFile)
+		for _, k in ipairs(keys) do
+			if saved and saved:find(k, 1, true) then cb(true) return end
+		end
+	end
+
+	-- Show key UI
+	local attempts = ks.MaxAttempts or 5
+	local screen = mk("ScreenGui", {Name="CelestialKey", ResetOnSpawn=false, IgnoreGuiInset=true, ZIndexBehavior=Enum.ZIndexBehavior.Sibling, DisplayOrder=999})
+	pcall(function() screen.Parent = CoreGui end)
+
+	local dim = mk("Frame", {Size=UDim2.new(1,0,1,0), BackgroundColor3=rgb(0,0,0), BackgroundTransparency=0.4}, screen)
+	local box = mk("Frame", {Size=UDim2.new(0,0,0,0), AnchorPoint=Vector2.new(0.5,0.5), Position=UDim2.new(0.5,0,0.5,0), BackgroundColor3=T.WindowBg, BackgroundTransparency=0.03, ZIndex=10}, screen)
+	cor(16, box) str(T.StrokeLight, 1, T.StrokeLightTrans, box)
+	grad(120, ColorSequence.new({ColorSequenceKeypoint.new(0,T.WindowBg2), ColorSequenceKeypoint.new(0.5,T.WindowBg), ColorSequenceKeypoint.new(1,T.WindowBg2)}), NumberSequence.new(0), box)
+
+	local function addLabel(text, y, size, font, color)
+		return mk("TextLabel", {Position=UDim2.new(0,24,0,y), Size=UDim2.new(1,-48,0,size), BackgroundTransparency=1, Text=text, TextColor3=color or T.TextPrimary, Font=font or Enum.Font.Gotham, TextSize=size, TextXAlignment=Enum.TextXAlignment.Left, TextWrapped=true, ZIndex=11}, box)
+	end
+
+	addLabel(ks.Title or opts.Name or "Celestial", 20, 18, Enum.Font.GothamBold)
+	addLabel(ks.Subtitle or "Key System", 44, 13, Enum.Font.Gotham, T.TextSecondary)
+	local noteLabel = addLabel(ks.Note or "Enter your key below.", 66, 12, Enum.Font.Gotham, T.TextMuted)
+	noteLabel.Size = UDim2.new(1,-48,0,32) noteLabel.TextWrapped = true
+
+	local inputBg = mk("Frame", {Position=UDim2.new(0,24,0,104), Size=UDim2.new(1,-48,0,36), BackgroundColor3=T.InputBackground, BackgroundTransparency=0.05, ZIndex=11}, box)
+	cor(9, inputBg) str(T.InputStroke, 1, 0.4, inputBg)
+	local inputBox = mk("TextBox", {Size=UDim2.new(1,-18,1,0), Position=UDim2.new(0,9,0,0), BackgroundTransparency=1, PlaceholderText="Enter key...", PlaceholderColor3=T.PlaceholderColor, TextColor3=T.TextPrimary, Font=Enum.Font.Gotham, TextSize=13, ClearTextOnFocus=false, ZIndex=12}, inputBg)
+
+	local attLbl = mk("TextLabel", {Position=UDim2.new(0,24,0,146), Size=UDim2.new(1,-48,0,14), BackgroundTransparency=1, Text="", TextColor3=T.TextMuted, Font=Enum.Font.Gotham, TextSize=11, TextXAlignment=Enum.TextXAlignment.Left, ZIndex=11}, box)
+	local confirmBtn = mk("TextButton", {Position=UDim2.new(0,24,0,168), Size=UDim2.new(1,-48,0,36), BackgroundColor3=T.Accent, Text="Confirm", TextColor3=T.AccentText, Font=Enum.Font.GothamBold, TextSize=13, AutoButtonColor=false, ZIndex=11}, box)
+	cor(9, confirmBtn)
+
+	local hideBtn = mk("TextButton", {Position=UDim2.new(1,-44,0,8), Size=UDim2.new(0,32,0,28), BackgroundTransparency=1, Text="×", TextColor3=T.TextMuted, Font=Enum.Font.GothamBold, TextSize=18, AutoButtonColor=false, ZIndex=12}, box)
+	hideBtn.MouseButton1Click:Connect(function()
+		tf(box, TM, {BackgroundTransparency=1}) tf(dim, TM, {BackgroundTransparency=1})
+		task.delay(0.25, function() screen:Destroy() end)
+		cb(false)
+	end)
+
+	tf(box, TSP, {Size=UDim2.new(0,420,0,215)})
+
+	local function tryKey()
+		local txt = inputBox.Text
+		if #txt == 0 then return end
+		for _, k in ipairs(keys) do
+			if txt == k then
+				if ks.SaveKey then safe(writefile, keyFile, k) end
+				tf(box, TM, {BackgroundTransparency=1}) tf(dim, TM, {BackgroundTransparency=1})
+				task.delay(0.25, function() screen:Destroy() end)
+				cb(true)
+				return
+			end
+		end
+		attempts -= 1
+		if attempts <= 0 then
+			Players.LocalPlayer:Kick("No key attempts remaining.")
+			return
+		end
+		attLbl.Text = "Incorrect key. "..attempts.." attempt(s) remaining."
+		inputBox.Text = ""
+		-- shake animation
+		tf(box, TweenInfo.new(0.05, Enum.EasingStyle.Quad), {Position=UDim2.new(0.5,-12,0.5,0)})
+		task.wait(0.07) tf(box, TweenInfo.new(0.05, Enum.EasingStyle.Quad), {Position=UDim2.new(0.5,12,0.5,0)})
+		task.wait(0.07) tf(box, TweenInfo.new(0.1, Enum.EasingStyle.Quad), {Position=UDim2.new(0.5,0,0.5,0)})
+	end
+
+	confirmBtn.MouseButton1Click:Connect(tryKey)
+	inputBox.FocusLost:Connect(function(enter) if enter then tryKey() end end)
+end
+
+------------------------------------------------------------------------
+-- SET THEME  /  REGISTER THEME
+------------------------------------------------------------------------
+function Celestial:SetTheme(name)
+	local T = Themes[name] if not T then warn("[Celestial] Unknown theme: "..tostring(name)) return end
+	self.ActiveTheme = T
+	for _, win in ipairs(self.Windows or {}) do
+		win._theme = T
+		for _, cb in ipairs(win._themeCallbacks or {}) do safe(cb, T) end
+	end
+end
+function Celestial:RegisterTheme(name, t)
+	local base = Themes.Celestial merged = {}
+	for k,v in pairs(base) do merged[k]=v end
+	for k,v in pairs(t) do merged[k]=v end
+	Themes[name] = merged return merged
+end
+function Celestial:IsVisible() return not _hidden end
+function Celestial:SetVisibility(v) if self._winObj then if v then self._winObj:_show() else self._winObj:_hide() end end end
+function Celestial:Destroy()
+	_destroyed = true
+	for _, c in ipairs(_keybindConns) do pcall(function() c:Disconnect() end) end
+	for _, win in ipairs(self.Windows or {}) do
+		if win._maid then win._maid:clean() end
+		if win._screen then pcall(function() win._screen:Destroy() end) end
+	end
+	self.Windows = {}
+end
+
+Celestial.Windows = {}
+Celestial.ActiveTheme = Themes.Celestial
+
+------------------------------------------------------------------------
+-- MAID
+------------------------------------------------------------------------
+local function newMaid()
+	local m = {_t={}}
+	function m:add(j) if j then table.insert(self._t, j) end return j end
+	function m:clean()
+		for _, j in ipairs(self._t) do
+			if typeof(j)=="RBXScriptConnection" then j:Disconnect()
+			elseif typeof(j)=="Instance" then pcall(function() j:Destroy() end)
+			elseif type(j)=="function" then pcall(j) end
+		end
+		for i=#self._t,1,-1 do self._t[i]=nil end
+	end
+	return m
+end
+
+------------------------------------------------------------------------
+-- POINT-IN-RECT
+------------------------------------------------------------------------
+local function inside(pos, inst)
+	if not inst or not inst.Parent then return false end
+	local ap, as = inst.AbsolutePosition, inst.AbsoluteSize
+	return pos.X>=ap.X and pos.X<=ap.X+as.X and pos.Y>=ap.Y and pos.Y<=ap.Y+as.Y
+end
+
+------------------------------------------------------------------------
+-- CREATE WINDOW
+------------------------------------------------------------------------
+function Celestial:CreateWindow(opts)
+	opts = opts or {}
+	local T = (type(opts.Theme)=="string" and Themes[opts.Theme]) or Themes.Celestial
+	self.ActiveTheme = T
+
+	folder(FOLDER) folder(CFG_DIR)
+
+	-- Config setup
+	local cfgOpts = opts.ConfigurationSaving
+	if cfgOpts and cfgOpts.Enabled then
+		_cfgEnabled = true
+		local fn = cfgOpts.FileName or tostring(game.PlaceId)
+		local dir = cfgOpts.FolderName or CFG_DIR
+		if cfgOpts.FolderName then folder(dir) end
+		_activeCfgFile = dir.."/"..fn..EXT
+	end
+
+	-- Discord invite
+	if opts.Discord and opts.Discord.Enabled and opts.Discord.Invite then
+		folder(FOLDER) folder(DISC_DIR)
+		local df = DISC_DIR.."/"..opts.Discord.Invite..EXT
+		if not safe(isfile, df) then
+			local req = (syn and syn.request) or (fluxus and fluxus.request) or (http and http.request) or http_request or request
+			if req then
+				safe(req, {Url="http://127.0.0.1:6463/rpc?v=1", Method="POST", Headers={["Content-Type"]="application/json", Origin="https://discord.com"}, Body=HTTP:JSONEncode({cmd="INVITE_BROWSER", nonce=HTTP:GenerateGUID(false), args={code=opts.Discord.Invite}})})
+			end
+			if opts.Discord.RememberJoins then safe(writefile, df, "joined") end
+		end
+	end
+
+	local W = (opts.Size and opts.Size.X) or 680
+	local H = (opts.Size and opts.Size.Y) or 460
+	local maid = newMaid()
+	local debounce = false
+	local minimised = false
+	local openPopups = {}
+	local themeCallbacks = {}
+	local tabBtns, tabFrames, tabs = {}, {}, {}
+	local activeFrame = nil
+
+	-- ScreenGui
+	local screen = mk("ScreenGui", {Name=opts.Name or "Celestial", ResetOnSpawn=false, IgnoreGuiInset=true, ZIndexBehavior=Enum.ZIndexBehavior.Sibling})
+	local ok2 = pcall(function() screen.Parent = CoreGui end)
+	if not ok2 then pcall(function() screen.Parent = Players.LocalPlayer:WaitForChild("PlayerGui") end) end
+
+	local overlay = mk("Frame", {Name="Overlay", Size=UDim2.new(1,0,1,0), BackgroundTransparency=1, ZIndex=200}, screen)
+
+	-- LOADING SCREEN
+	local loadScreen = mk("ScreenGui", {Name="CelestialLoading", ResetOnSpawn=false, IgnoreGuiInset=true, ZIndexBehavior=Enum.ZIndexBehavior.Sibling, DisplayOrder=500})
+	pcall(function() loadScreen.Parent = CoreGui end)
+	local loadBg = mk("Frame", {Size=UDim2.new(1,0,1,0), BackgroundColor3=T.WindowBg, BackgroundTransparency=0}, loadScreen)
+	grad(120, ColorSequence.new({ColorSequenceKeypoint.new(0,T.WindowBg2), ColorSequenceKeypoint.new(0.5,T.WindowBg), ColorSequenceKeypoint.new(1,T.WindowBg2)}), NumberSequence.new(0), loadBg)
+	local loadTitle = mk("TextLabel", {Position=UDim2.new(0.5,-200,0.5,-30), Size=UDim2.new(0,400,0,32), BackgroundTransparency=1, Text=opts.LoadingTitle or "Celestial", TextColor3=T.TextPrimary, Font=Enum.Font.GothamBold, TextSize=28, TextXAlignment=Enum.TextXAlignment.Center, TextTransparency=1}, loadBg)
+	local loadSub = mk("TextLabel", {Position=UDim2.new(0.5,-200,0.5,8), Size=UDim2.new(0,400,0,22), BackgroundTransparency=1, Text=opts.LoadingSubtitle or "Interface Suite", TextColor3=T.TextSecondary, Font=Enum.Font.Gotham, TextSize=16, TextXAlignment=Enum.TextXAlignment.Center, TextTransparency=1}, loadBg)
+	local loadVer = mk("TextLabel", {Position=UDim2.new(0.5,-200,0.5,34), Size=UDim2.new(0,400,0,16), BackgroundTransparency=1, Text="v"..VERSION, TextColor3=T.TextMuted, Font=Enum.Font.Gotham, TextSize=12, TextXAlignment=Enum.TextXAlignment.Center, TextTransparency=1}, loadBg)
+	-- accent bar that grows then shrinks
+	local barBg = mk("Frame", {Position=UDim2.new(0.5,-180,0.5,62), Size=UDim2.new(0,360,0,3), BackgroundColor3=T.SurfaceDeep, BackgroundTransparency=T.SurfaceDeepTrans}, loadBg) cor(2, barBg)
+	local barFill = mk("Frame", {Size=UDim2.new(0,0,1,0), BackgroundColor3=T.Accent}, barBg) cor(2, barFill)
+
+	-- Animate loading screen
+	task.spawn(function()
+		task.wait(0.1)
+		tf(loadTitle, TEX, {TextTransparency=0}) task.wait(0.1)
+		tf(loadSub, TEX, {TextTransparency=0}) task.wait(0.05)
+		tf(loadVer, TEX, {TextTransparency=0})
+		tf(barFill, TweenInfo.new(1.5, Enum.EasingStyle.Quart), {Size=UDim2.new(1,0,1,0)})
+	end)
+
+	local function finishLoading()
+		tf(loadBg, TM, {BackgroundTransparency=1})
+		tf(loadTitle, TM, {TextTransparency=1})
+		tf(loadSub, TM, {TextTransparency=1})
+		tf(loadVer, TM, {TextTransparency=1})
+		tf(barFill, TM, {BackgroundTransparency=1})
+		task.delay(0.25, function() loadScreen:Destroy() end)
+	end
+
+	-- Main window
+	local win = mk("Frame", {Name="Window", Size=UDim2.new(0,W,0,H), Position=UDim2.new(0.5,-W/2,0.5,-H/2), BackgroundColor3=T.WindowBg, BackgroundTransparency=1, ClipsDescendants=true, ZIndex=1}, screen)
+	cor(18, win) str(T.StrokeLight, 1, T.StrokeLightTrans, win)
+	grad(120, ColorSequence.new({ColorSequenceKeypoint.new(0,T.WindowBg2), ColorSequenceKeypoint.new(0.5,T.WindowBg), ColorSequenceKeypoint.new(1,T.WindowBg2)}), NumberSequence.new(0), win)
+	mk("ImageLabel", {Name="Shadow", Size=UDim2.new(1,90,1,90), Position=UDim2.new(0,-45,0,-45), BackgroundTransparency=1, Image="rbxassetid://6014261993", ImageColor3=T.Shadow, ImageTransparency=0.15, ScaleType=Enum.ScaleType.Slice, SliceCenter=Rect.new(49,49,450,450), ZIndex=0}, win)
+	mk("ImageLabel", {Name="Glow", Size=UDim2.new(1,0,0,220), Position=UDim2.new(0,0,0,-110), BackgroundTransparency=1, Image="rbxassetid://6014261993", ImageColor3=T.Glow, ImageTransparency=0.88, ScaleType=Enum.ScaleType.Slice, SliceCenter=Rect.new(49,49,450,450), ZIndex=0}, win)
+
+	-- Topbar
+	local topbar = mk("Frame", {Name="Topbar", Size=UDim2.new(1,0,0,52), BackgroundColor3=T.TopbarBg, BackgroundTransparency=T.TopbarTrans, ZIndex=5}, win) cor(18, topbar)
+	mk("Frame", {Position=UDim2.new(0,0,1,-20), Size=UDim2.new(1,0,0,20), BackgroundColor3=T.TopbarBg, BackgroundTransparency=T.TopbarTrans, ZIndex=5}, topbar)
+	mk("Frame", {Position=UDim2.new(0,0,1,-1), Size=UDim2.new(1,0,0,1), BackgroundColor3=T.Accent, BackgroundTransparency=0.75, ZIndex=6}, topbar)
+	local dot = mk("Frame", {Position=UDim2.new(0,18,0.5,-4), Size=UDim2.new(0,8,0,8), BackgroundColor3=T.Accent, ZIndex=6}, topbar) cor(4, dot)
+	local titleLbl = mk("TextLabel", {Position=UDim2.new(0,34,0,0), Size=UDim2.new(0.6,0,1,0), BackgroundTransparency=1, Text=opts.Name or "Celestial", TextColor3=T.TextPrimary, Font=Enum.Font.GothamBold, TextSize=14, TextXAlignment=Enum.TextXAlignment.Left, ZIndex=6}, topbar)
+	local tw2 = TXS:GetTextSize(opts.Name or "Celestial", 14, Enum.Font.GothamBold, Vector2.new(400,20)).X
+	local badge = mk("Frame", {Size=UDim2.new(0,46,0,18), Position=UDim2.new(0,34+tw2+10,0.5,-9), BackgroundColor3=T.Accent, BackgroundTransparency=0.82, ZIndex=6}, topbar) cor(6, badge) str(T.Accent, 1, 0.65, badge)
+	mk("TextLabel", {Size=UDim2.new(1,0,1,0), BackgroundTransparency=1, Text="v"..VERSION, TextColor3=T.Accent, Font=Enum.Font.GothamBold, TextSize=10, ZIndex=7}, badge)
+
+	local function makeCtrl(icon, hc, xo, fn)
+		local b = mk("TextButton", {Size=UDim2.new(0,30,0,30), Position=UDim2.new(1,xo,0.5,-15), BackgroundTransparency=1, Text=icon, TextColor3=T.TextMuted, Font=Enum.Font.GothamBold, TextSize=15, AutoButtonColor=false, ZIndex=6}, topbar) cor(9, b)
+		b.MouseButton1Click:Connect(fn)
+		b.MouseEnter:Connect(function() tf(b, TF, {BackgroundTransparency=0.82, TextColor3=hc}) end)
+		b.MouseLeave:Connect(function() tf(b, TF, {BackgroundTransparency=1, TextColor3=T.TextMuted}) end)
+		return b
+	end
+
+	local function _show()
+		_hidden = false win.Visible = true
+		tf(win, TM, {BackgroundTransparency=T.WindowTrans, Size=UDim2.new(0,W,0,minimised and 52 or H)})
+	end
+	local function _hide()
+		_hidden = true
+		tf(win, TM, {BackgroundTransparency=1, Size=UDim2.new(0,W,0,0)})
+		task.delay(0.25, function() win.Visible = false end)
+	end
+
+	makeCtrl("×", rgb(255,90,80), -38, function()
+		tf(win, TM, {Size=UDim2.new(0,0,0,0), BackgroundTransparency=1})
+		task.delay(0.25, function() screen:Destroy() end)
+	end)
+	makeCtrl("–", T.Accent, -72, function()
+		minimised = not minimised
+		tf(win, TM, {Size=minimised and UDim2.new(0,W,0,52) or UDim2.new(0,W,0,H)})
+	end)
+
+	-- Drag + edge snap
+	do
+		local dragging, sm, sp = false, nil, nil
+		topbar.InputBegan:Connect(function(i)
+			if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
+				dragging=true sm=i.Position sp=win.Position
+			end
+		end)
+		topbar.InputEnded:Connect(function(i)
+			if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
+				if dragging then
+					local SNAP=24 local ss=overlay.AbsoluteSize local pos=win.Position local ws=win.AbsoluteSize
+					local x,y=pos.X.Offset,pos.Y.Offset local sn=false
+					if x<SNAP then x=0 sn=true end
+					if x+ws.X>ss.X-SNAP then x=ss.X-ws.X sn=true end
+					if y<SNAP then y=0 sn=true end
+					if sn then tf(win, TF, {Position=UDim2.new(pos.X.Scale,x,pos.Y.Scale,y)}) end
+				end
+				dragging=false
+			end
+		end)
+		maid:add(UIS.InputChanged:Connect(function(i)
+			if not dragging then return end
+			if i.UserInputType~=Enum.UserInputType.MouseMovement and i.UserInputType~=Enum.UserInputType.Touch then return end
+			local d=i.Position-sm local ss=overlay.AbsoluteSize local ws=win.AbsoluteSize
+			win.Position=UDim2.new(sp.X.Scale, math.clamp(sp.X.Offset+d.X,40-ws.X,ss.X-40), sp.Y.Scale, math.clamp(sp.Y.Offset+d.Y,0,ss.Y-40))
+		end))
+	end
+
+	-- Resize grip
+	local rg = mk("TextButton", {Name="Resize", Size=UDim2.new(0,20,0,20), Position=UDim2.new(1,-20,1,-20), BackgroundTransparency=1, Text="⌟", TextColor3=T.TextMuted, Font=Enum.Font.GothamBold, TextSize=16, AutoButtonColor=false, ZIndex=20}, win)
+	do
+		local resizing, rsm, rss = false, nil, nil
+		rg.InputBegan:Connect(function(i)
+			if i.UserInputType==Enum.UserInputType.MouseButton1 then resizing=true rsm=i.Position rss=win.AbsoluteSize end
+		end)
+		rg.InputEnded:Connect(function(i)
+			if i.UserInputType==Enum.UserInputType.MouseButton1 then resizing=false end
+		end)
+		maid:add(UIS.InputChanged:Connect(function(i)
+			if not resizing or i.UserInputType~=Enum.UserInputType.MouseMovement then return end
+			local d=i.Position-rsm
+			win.Size=UDim2.new(0, math.clamp(rss.X+d.X,420,1200), 0, math.clamp(rss.Y+d.Y,300,850))
+		end))
+	end
+
+	-- Sidebar
+	local sidebar = mk("Frame", {Name="Sidebar", Position=UDim2.new(0,0,0,52), Size=UDim2.new(0,175,1,-52), BackgroundColor3=T.SidebarBg, BackgroundTransparency=T.SidebarTrans, ClipsDescendants=true, ZIndex=4}, win)
+	mk("Frame", {Position=UDim2.new(1,-1,0,0), Size=UDim2.new(0,1,1,0), BackgroundColor3=T.Accent, BackgroundTransparency=0.85, ZIndex=4}, sidebar)
+
+	-- Sidebar search
+	local searchBg = mk("Frame", {Position=UDim2.new(0,10,0,10), Size=UDim2.new(1,-20,0,30), BackgroundColor3=T.InputBackground, BackgroundTransparency=0.05, ZIndex=5}, sidebar) cor(8, searchBg) str(T.StrokeLight, 1, T.StrokeLightTrans, searchBg)
+	local searchInput = mk("TextBox", {Size=UDim2.new(1,-16,1,0), Position=UDim2.new(0,8,0,0), BackgroundTransparency=1, PlaceholderText="Search tabs...", PlaceholderColor3=T.PlaceholderColor, TextColor3=T.TextPrimary, Font=Enum.Font.Gotham, TextSize=12, ClearTextOnFocus=false, ZIndex=6}, searchBg)
+
+	local tabScroll = mk("ScrollingFrame", {Position=UDim2.new(0,0,0,46), Size=UDim2.new(1,0,1,-54), BackgroundTransparency=1, ScrollBarThickness=0, CanvasSize=UDim2.new(0,0,0,0)}, sidebar)
+	local tabLayout = ll(Enum.FillDirection.Vertical, Enum.SortOrder.LayoutOrder, 4, tabScroll) pd(10,10,4,10,tabScroll)
+
+	tabLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+		tabScroll.CanvasSize = UDim2.new(0,0,0,tabLayout.AbsoluteContentSize.Y)
+	end)
+
+	-- Live search filter
+	searchInput:GetPropertyChangedSignal("Text"):Connect(function()
+		local q = searchInput.Text:lower()
+		for _, btn in ipairs(tabBtns) do
+			btn.Visible = q=="" or btn.Name:lower():find(q,1,true)~=nil
+		end
+	end)
+
+	-- Content
+	local content = mk("Frame", {Name="Content", Position=UDim2.new(0,176,0,52), Size=UDim2.new(1,-176,1,-52), BackgroundTransparency=1, ClipsDescendants=true, ZIndex=2}, win)
+
+	-- Toggle keybind
+	local kb = opts.Keybind or (opts.ToggleUIKeybind and (type(opts.ToggleUIKeybind)=="string" and Enum.KeyCode[opts.ToggleUIKeybind] or opts.ToggleUIKeybind)) or Enum.KeyCode.LeftAlt
+	maid:add(UIS.InputBegan:Connect(function(i, gpe)
+		if gpe then return end
+		if i.KeyCode == kb then
+			if _hidden then _show() else _hide() end
+		end
+	end))
+
+	-- Click-outside popup close
+	maid:add(UIS.InputBegan:Connect(function(input, gpe)
+		if gpe then return end
+		if input.UserInputType~=Enum.UserInputType.MouseButton1 and input.UserInputType~=Enum.UserInputType.Touch then return end
+		local pos=input.Position
+		for _, popup in ipairs(openPopups) do
+			if popup._isOpen and popup._clickOutside then
+				if not inside(pos, popup._container) and not inside(pos, popup._trigger) then
+					popup._clickOutside()
+				end
+			end
+		end
+	end))
+
+	-- UIScale
+	local uiScale = mk("UIScale", {Scale=1}, win)
+
+	-- Theme callbacks
+	table.insert(themeCallbacks, function(newT)
+		tf(win, TM, {BackgroundColor3=newT.WindowBg, BackgroundTransparency=newT.WindowTrans})
+		tf(topbar, TM, {BackgroundColor3=newT.TopbarBg, BackgroundTransparency=newT.TopbarTrans})
+		tf(sidebar, TM, {BackgroundColor3=newT.SidebarBg, BackgroundTransparency=newT.SidebarTrans})
+		dot.BackgroundColor3 = newT.Accent
+	end)
+
+	-- Window object
+	local Win = {}
+	Win._theme = T Win._screen = screen Win._win = win Win._sidebar = tabScroll Win._content = content
+	Win._overlay = overlay Win._tabs = tabs Win._tabBtns = tabBtns Win._tabFrames = tabFrames
+	Win._themeCallbacks = themeCallbacks Win._maid = maid Win._openPopups = openPopups
+
+	function Win:SetScale(f) uiScale.Scale = math.clamp(f, 0.75, 1.5) end
+	function Win:_show() _show() end function Win:_hide() _hide() end
+	function Win:_applyTheme(newT) for _, cb in ipairs(self._themeCallbacks) do safe(cb, newT) end end
+	function Win:_onTC(fn) table.insert(self._themeCallbacks, fn) end
+
+	function Win.ModifyTheme(newTheme)
+		local t2 = type(newTheme)=="string" and Themes[newTheme] or newTheme
+		if not t2 then Celestial:Notify({Title="Theme Error", Content="Theme not found.", Type="error"}) return end
+		Celestial.ActiveTheme = t2
+		Win._theme = t2
+		Win:_applyTheme(t2)
+		Celestial:Notify({Title="Theme Changed", Content="Theme set to "..(type(newTheme)=="string" and newTheme or "Custom"), Duration=2})
+	end
+
+	function Win:SelectTab(index)
+		local tab = tabs[index]
+		if tab and tab._activate then tab._activate() end
+	end
+
+	function Win:Destroy()
+		maid:clean()
+		if screen and screen.Parent then pcall(function() screen:Destroy() end) end
+	end
+
+	----------------------------------------------------------------------
+	-- CREATE TAB GROUP
+	----------------------------------------------------------------------
+	function Win:CreateTabGroup(name)
+		local groupT = self._theme
+		local gh = mk("TextButton", {Size=UDim2.new(1,0,0,22), BackgroundTransparency=1, Text="", AutoButtonColor=false}, tabScroll)
+		local gl = mk("TextLabel", {Size=UDim2.new(1,-18,1,0), BackgroundTransparency=1, Text=name:upper(), TextColor3=groupT.TextMuted, Font=Enum.Font.GothamBold, TextSize=10, TextXAlignment=Enum.TextXAlignment.Left}, gh)
+		local gc = mk("TextLabel", {Position=UDim2.new(1,-18,0,0), Size=UDim2.new(0,18,1,0), BackgroundTransparency=1, Text="⌄", TextColor3=groupT.TextMuted, Font=Enum.Font.GothamBold, TextSize=12}, gh)
+		local sf = mk("Frame", {Size=UDim2.new(1,0,0,0), AutomaticSize=Enum.AutomaticSize.Y, BackgroundTransparency=1, ClipsDescendants=false}, tabScroll)
+		ll(Enum.FillDirection.Vertical, Enum.SortOrder.LayoutOrder, 4, sf)
+		local collapsed = false
+		gh.MouseButton1Click:Connect(function()
+			collapsed = not collapsed sf.Visible = not collapsed
+			tf(gc, TF, {Rotation=collapsed and -90 or 0})
+		end)
+		self:_onTC(function(newT) gl.TextColor3=newT.TextMuted gc.TextColor3=newT.TextMuted end)
+		local Group = {}
+		function Group:CreateTab(tabOpts) return Win:_createTab(tabOpts, sf) end
+		return Group
+	end
+
+	----------------------------------------------------------------------
+	-- CREATE TAB (internal)
+	----------------------------------------------------------------------
+	function Win:_createTab(tabOpts, parentContainer)
+		local tabName = tabOpts.Name or "Tab"
+		local theme = self._theme
+		local tabParent = parentContainer or tabScroll
+
+		local btn = mk("TextButton", {Name=tabName, Size=UDim2.new(1,0,0,36), BackgroundColor3=theme.Accent, BackgroundTransparency=1, Text="", AutoButtonColor=false, ZIndex=5}, tabParent) cor(10, btn)
+
+		local textOffX = 14
+		if tabOpts.Icon and tabOpts.Icon ~= 0 then
+			textOffX = 36
+			mk("TextLabel", {Size=UDim2.new(0,18,0,18), Position=UDim2.new(0,11,0.5,-9), BackgroundTransparency=1, Text=type(tabOpts.Icon)=="string" and tabOpts.Icon or "●", TextColor3=theme.TextMuted, Font=Enum.Font.Gotham, TextSize=14, ZIndex=6}, btn)
+		end
+		local btnLbl = mk("TextLabel", {Position=UDim2.new(0,textOffX,0,0), Size=UDim2.new(1,-textOffX,1,0), BackgroundTransparency=1, Text=tabName, TextColor3=theme.TextMuted, Font=Enum.Font.Gotham, TextSize=13, TextXAlignment=Enum.TextXAlignment.Left, ZIndex=6}, btn)
+		local acBar = mk("Frame", {Size=UDim2.new(0,3,0,0), Position=UDim2.new(0,0,0.5,0), AnchorPoint=Vector2.new(0,0.5), BackgroundColor3=theme.Accent, ZIndex=6}, btn) cor(4, acBar)
+
+		local frame = mk("ScrollingFrame", {Name=tabName.."_Frame", Size=UDim2.new(1,0,1,0), BackgroundTransparency=1, ScrollBarThickness=3, ScrollBarImageColor3=theme.Accent, ScrollBarImageTransparency=0.4, CanvasSize=UDim2.new(0,0,0,0), Visible=false, ZIndex=3}, content)
+		local layout = ll(Enum.FillDirection.Vertical, Enum.SortOrder.LayoutOrder, 8, frame) pd(16,16,14,16,frame)
+		local function updCanvas() frame.CanvasSize = UDim2.new(0,0,0,layout.AbsoluteContentSize.Y+24) end
+		updCanvas() layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updCanvas)
+
+		table.insert(tabBtns, btn) table.insert(tabFrames, frame)
+
+		local function activate()
+			for _, b in ipairs(tabBtns) do
+				tf(b, TF, {BackgroundTransparency=1})
+				local bar = b:FindFirstChild("Frame") if bar then tf(bar, TF, {Size=UDim2.new(0,3,0,0)}) end
+				local lbl = b:FindFirstChildOfClass("TextLabel") if lbl then tf(lbl, TF, {TextColor3=theme.TextMuted}) lbl.Font=Enum.Font.Gotham end
+			end
+			for _, f in ipairs(tabFrames) do f.Visible=false end
+			tf(btn, TF, {BackgroundTransparency=0.88})
+			tf(acBar, TM, {Size=UDim2.new(0,3,0,18)})
+			tf(btnLbl, TF, {TextColor3=theme.TextPrimary}) btnLbl.Font=Enum.Font.GothamBold
+			frame.Visible=true activeFrame=frame task.defer(updCanvas)
+		end
+
+		btn.MouseButton1Click:Connect(activate)
+		btn.MouseEnter:Connect(function() if frame.Visible then return end tf(btn,TF,{BackgroundTransparency=0.94}) end)
+		btn.MouseLeave:Connect(function() if frame.Visible then return end tf(btn,TF,{BackgroundTransparency=1}) end)
+
+		if #tabFrames==1 then activate() end
+
+		----------------------------------------------------------------------
+		-- TAB OBJECT
+		----------------------------------------------------------------------
+		local Tab = {_frame=frame, _window=self, _order=0, _activate=activate}
+		table.insert(tabs, Tab)
+
+		local function nextOrder() Tab._order+=1 return Tab._order end
+		local function glassRow(h, par)
+			local row = mk("Frame", {Size=UDim2.new(1,0,0,h or 50), BackgroundColor3=theme.ElementBackground, BackgroundTransparency=0, ClipsDescendants=false, LayoutOrder=nextOrder()}, par or frame)
+			cor(12, row) str(theme.ElementStroke, 1, 0.3, row) return row
+		end
+		local function ripple(par, x, y)
+			local r = mk("Frame", {Size=UDim2.new(0,0,0,0), Position=UDim2.new(0,x,0,y), AnchorPoint=Vector2.new(0.5,0.5), BackgroundColor3=theme.Ripple, BackgroundTransparency=0.6, ZIndex=20}, par) cor(999, r)
+			tf(r, TweenInfo.new(0.45, Enum.EasingStyle.Quint), {Size=UDim2.new(0,130,0,130), BackgroundTransparency=1})
+			task.delay(0.5, function() if r and r.Parent then r:Destroy() end end)
+		end
+
+		function Tab:RefreshCanvas() updCanvas() end
+
+		-- Section
+		function Tab:CreateSection(name)
+			local lbl = mk("TextLabel", {Size=UDim2.new(1,0,0,22), BackgroundTransparency=1, Text=name:upper(), TextColor3=theme.TextMuted, Font=Enum.Font.GothamBold, TextSize=10, TextXAlignment=Enum.TextXAlignment.Left, LayoutOrder=nextOrder()}, frame)
+			Win:_onTC(function(newT) lbl.TextColor3=newT.TextMuted end)
+			return {Set=function(v) lbl.Text=tostring(v):upper() end}
+		end
+
+		-- Divider
+		function Tab:CreateDivider()
+			local ln = mk("Frame", {Size=UDim2.new(1,0,0,1), BackgroundColor3=theme.ElementStroke, BackgroundTransparency=0.3, LayoutOrder=nextOrder()}, frame)
+			Win:_onTC(function(newT) ln.BackgroundColor3=newT.ElementStroke end)
+			return {Set=function(v) ln.Visible=v end}
+		end
+
+		-- Label
+		function Tab:CreateLabel(text, icon, color, ignoreTheme)
+			local row = glassRow(42)
+			if color then row.BackgroundColor3=color row.BackgroundTransparency=0.8 end
+			local lbl = mk("TextLabel", {Position=UDim2.new(0,14,0,0), Size=UDim2.new(1,-14,1,0), BackgroundTransparency=1, Text=text or "", TextColor3=color and theme.TextPrimary or theme.TextSecondary, Font=Enum.Font.Gotham, TextSize=13, TextXAlignment=Enum.TextXAlignment.Left, TextWrapped=true}, row)
+			Win:_onTC(function(newT) if not ignoreTheme then row.BackgroundColor3=newT.ElementBackground lbl.TextColor3=newT.TextSecondary end end)
+			return {Set=function(v) lbl.Text=tostring(v) end}
+		end
+
+		-- Paragraph
+		function Tab:CreateParagraph(o)
+			o = o or {}
+			local container = mk("Frame", {Size=UDim2.new(1,0,0,o.Height or 62), BackgroundColor3=theme.SecondaryElementBackground, BackgroundTransparency=0, ClipsDescendants=false, LayoutOrder=nextOrder()}, frame)
+			cor(12, container) str(theme.SecondaryElementStroke, 1, 0.3, container)
+			local tl = mk("TextLabel", {Position=UDim2.new(0,16,0,10), Size=UDim2.new(1,-32,0,18), BackgroundTransparency=1, Text=o.Title or "", TextColor3=theme.TextPrimary, Font=Enum.Font.GothamBold, TextSize=13, TextXAlignment=Enum.TextXAlignment.Left, TextWrapped=true}, container)
+			local cl = nil
+			if o.Content and o.Content~="" then
+				cl = mk("TextLabel", {Position=UDim2.new(0,16,0,30), Size=UDim2.new(1,-32,0,24), BackgroundTransparency=1, Text=o.Content, TextColor3=theme.TextSecondary, Font=Enum.Font.Gotham, TextSize=11, TextXAlignment=Enum.TextXAlignment.Left, TextWrapped=true}, container)
+			end
+			local function recalc()
+				if not container.Parent then return end
+				local aw=math.max(container.AbsoluteSize.X-32,200)
+				local ts=TXS:GetTextSize(tl.Text,13,Enum.Font.GothamBold,Vector2.new(aw,9e4))
+				local cs=cl and TXS:GetTextSize(cl.Text,11,Enum.Font.Gotham,Vector2.new(aw,9e4)) or Vector2.zero
+				tl.Size=UDim2.new(1,-32,0,ts.Y)
+				if cl then cl.Position=UDim2.new(0,16,0,10+ts.Y+4) cl.Size=UDim2.new(1,-32,0,cs.Y) end
+				if not o.Height then container.Size=UDim2.new(1,0,0,16+ts.Y+4+cs.Y+14) end
+				updCanvas()
+			end
+			task.defer(recalc) container:GetPropertyChangedSignal("AbsoluteSize"):Connect(recalc)
+			Win:_onTC(function(newT) tl.TextColor3=newT.TextPrimary if cl then cl.TextColor3=newT.TextSecondary end container.BackgroundColor3=newT.SecondaryElementBackground end)
+			return {
+				Set=function(newO) if type(newO)=="table" then tl.Text=newO.Title or tl.Text if cl and newO.Content then cl.Text=newO.Content end end recalc() end,
+				SetTitle=function(v) tl.Text=tostring(v) recalc() end,
+				SetContent=function(v) if cl then cl.Text=tostring(v) recalc() end end,
+			}
+		end
+
+		-- Progress Bar
+		function Tab:CreateProgressBar(o)
+			o = o or {}
+			local mn, mx = o.Min or 0, o.Max or 100
+			local val = math.clamp(o.Default or mn, mn, mx)
+			local row = glassRow(50)
+			mk("TextLabel", {Position=UDim2.new(0,16,0,9), Size=UDim2.new(1,-84,0,18), BackgroundTransparency=1, Text=o.Name or "", TextColor3=theme.TextPrimary, Font=Enum.Font.Gotham, TextSize=13, TextXAlignment=Enum.TextXAlignment.Left}, row)
+			local pctLbl = mk("TextLabel", {Position=UDim2.new(1,-60,0,9), Size=UDim2.new(0,44,0,18), BackgroundTransparency=1, TextColor3=theme.Accent, Font=Enum.Font.GothamBold, TextSize=12, TextXAlignment=Enum.TextXAlignment.Right}, row)
+			local track = mk("Frame", {Position=UDim2.new(0,16,0,32), Size=UDim2.new(1,-32,0,6), BackgroundColor3=theme.SliderTrack, BackgroundTransparency=0}, row) cor(6, track)
+			local fill = mk("Frame", {Size=UDim2.new(0,0,1,0), BackgroundColor3=theme.SliderFill}, track) cor(6, fill)
+			local function setVal(v)
+				v=math.clamp(v,mn,mx) val=v local pct=(v-mn)/(mx-mn)
+				tf(fill,TM,{Size=UDim2.new(pct,0,1,0)}) pctLbl.Text=string.format("%.0f%%",pct*100)
+			end
+			setVal(val)
+			return {Set=setVal}
+		end
+
+		-- Spinner
+		function Tab:CreateSpinner(o)
+			o=o or {}
+			local row=glassRow(50)
+			mk("TextLabel", {Position=UDim2.new(0,46,0,0), Size=UDim2.new(1,-60,1,0), BackgroundTransparency=1, Text=o.Name or "Loading...", TextColor3=theme.TextSecondary, Font=Enum.Font.Gotham, TextSize=12, TextXAlignment=Enum.TextXAlignment.Left}, row)
+			local ring=mk("Frame", {Position=UDim2.new(0,16,0.5,-9), Size=UDim2.new(0,18,0,18), BackgroundTransparency=1, Visible=false}, row) cor(9,ring)
+			local rs=str(theme.Accent,2,0.15,ring)
+			mk("Frame", {Size=UDim2.new(0.6,0,1.2,0), Position=UDim2.new(0.4,0,-0.1,0), BackgroundColor3=theme.ElementBackground, BackgroundTransparency=0, ZIndex=2}, ring)
+			local running=false local sc=nil
+			local function start() if running then return end running=true ring.Visible=true sc=Run.RenderStepped:Connect(function(dt) ring.Rotation=(ring.Rotation+dt*300)%360 end) end
+			local function stop() running=false ring.Visible=false if sc then sc:Disconnect() sc=nil end end
+			if o.AutoStart then start() end
+			return {Start=start, Stop=stop, IsRunning=function() return running end}
+		end
+
+		-- Button
+		function Tab:CreateButton(o)
+			local hasDesc = o.Description and o.Description~=""
+			local row=glassRow(hasDesc and 62 or 50) row.ClipsDescendants=true
+			mk("TextLabel", {Position=UDim2.new(0,16,0,0), Size=UDim2.new(1,-104,1,0), BackgroundTransparency=1, Text=o.Name or "", TextColor3=theme.TextPrimary, Font=Enum.Font.Gotham, TextSize=13, TextXAlignment=Enum.TextXAlignment.Left}, row)
+			if hasDesc then mk("TextLabel", {Position=UDim2.new(0,16,0,29), Size=UDim2.new(1,-104,0,16), BackgroundTransparency=1, Text=o.Description, TextColor3=theme.TextMuted, Font=Enum.Font.Gotham, TextSize=10, TextXAlignment=Enum.TextXAlignment.Left}, row) end
+			local cb2 = mk("TextButton", {Size=UDim2.new(0,76,0,30), Position=UDim2.new(1,-88,0.5,-15), BackgroundColor3=theme.Accent, Text="Run", TextColor3=theme.AccentText, Font=Enum.Font.GothamBold, TextSize=12, AutoButtonColor=false, ZIndex=5}, row) cor(9, cb2)
+			cb2.MouseButton1Click:Connect(function()
+				playSound(SND_CLICK)
+				tf(cb2, TF, {Size=UDim2.new(0,70,0,27), Position=UDim2.new(1,-86,0.5,-13)})
+				ripple(row, cb2.AbsolutePosition.X-row.AbsolutePosition.X+38, 25)
+				task.delay(0.1, function() tf(cb2, TSP, {Size=UDim2.new(0,76,0,30), Position=UDim2.new(1,-88,0.5,-15)}) end)
+				local ok, err = pcall(o.Callback)
+				if not ok then
+					local ot = cb2.Text cb2.Text="Error!" cb2.BackgroundColor3=rgb(180,40,40)
+					task.delay(1, function() cb2.Text=ot tf(cb2, TM, {BackgroundColor3=theme.Accent}) end)
+					warn("[Celestial] Button '"..tostring(o.Name).."' error: "..tostring(err))
+				end
+			end)
+			cb2.MouseEnter:Connect(function() tf(cb2, TF, {BackgroundColor3=theme.AccentHover}) end)
+			cb2.MouseLeave:Connect(function() tf(cb2, TF, {BackgroundColor3=theme.Accent}) end)
+			row.MouseEnter:Connect(function() tf(row, TF, {BackgroundColor3=theme.ElementBackgroundHover}) end)
+			row.MouseLeave:Connect(function() tf(row, TF, {BackgroundColor3=theme.ElementBackground}) end)
+			Win:_onTC(function(newT) tf(cb2, TM, {BackgroundColor3=newT.Accent}) cb2.TextColor3=newT.AccentText end)
+			local bv = {} function bv:Set(n) cb2.Text=n end return bv
+		end
+
+		-- Toggle (Rayfield API: CurrentValue)
+		function Tab:CreateToggle(o)
+			local state = (o.CurrentValue == true or o.Default == true)
+			local hasDesc = o.Description and o.Description~=""
+			local row = glassRow(hasDesc and 62 or 50)
+			mk("TextLabel", {Position=UDim2.new(0,16,0,hasDesc and 9 or 0), Size=UDim2.new(1,-84,0,18), BackgroundTransparency=1, Text=o.Name or "", TextColor3=theme.TextPrimary, Font=Enum.Font.Gotham, TextSize=13, TextXAlignment=Enum.TextXAlignment.Left}, row)
+			if hasDesc then mk("TextLabel", {Position=UDim2.new(0,16,0,29), Size=UDim2.new(1,-84,0,16), BackgroundTransparency=1, Text=o.Description, TextColor3=theme.TextMuted, Font=Enum.Font.Gotham, TextSize=10, TextXAlignment=Enum.TextXAlignment.Left}, row) end
+			local track = mk("Frame", {Size=UDim2.new(0,46,0,26), Position=UDim2.new(1,-60,0.5,-13), BackgroundColor3=state and theme.ToggleEnabled or theme.ToggleDisabled}, row) cor(13, track)
+			str(state and theme.ToggleEnabledOuterStroke or theme.ToggleDisabledOuterStroke, 1, 0.3, track)
+			local knob = mk("Frame", {Size=UDim2.new(0,20,0,20), Position=state and UDim2.new(1,-23,0.5,-10) or UDim2.new(0,3,0.5,-10), BackgroundColor3=rgb(255,255,255)}, track) cor(10, knob)
+			local ts = str(state and theme.ToggleEnabledStroke or theme.ToggleDisabledStroke, 1.5, 0.3, knob)
+			local clickArea = mk("TextButton", {Size=UDim2.new(1,0,1,0), BackgroundTransparency=1, Text=""}, row)
+
+			local function setState(val, skipCallback)
+				state=val val=val==true
+				playSound(SND_TOGGLE)
+				tf(track, TM, {BackgroundColor3=val and theme.ToggleEnabled or theme.ToggleDisabled})
+				tf(knob, TSP, {Position=val and UDim2.new(1,-23,0.5,-10) or UDim2.new(0,3,0.5,-10), Size=UDim2.new(0,20,0,20)})
+				if ts then ts.Color = val and theme.ToggleEnabledStroke or theme.ToggleDisabledStroke end
+				if not skipCallback then
+					local ok, err = pcall(o.Callback, val)
+					if not ok then warn("[Celestial] Toggle '"..tostring(o.Name).."' error: "..tostring(err)) end
+				end
+				if o.Flag then
+					o.CurrentValue = val
+					Celestial.Flags[o.Flag] = o
+					saveConfig()
+				end
+			end
+
+			clickArea.MouseButton1Down:Connect(function() tf(knob, TF, {Size=UDim2.new(0,24,0,20)}) end)
+			clickArea.MouseButton1Up:Connect(function() setState(not state) end)
+			Win:_onTC(function(newT)
+				tf(track, TM, {BackgroundColor3=state and newT.ToggleEnabled or newT.ToggleDisabled})
+				if ts then ts.Color = state and newT.ToggleEnabledStroke or newT.ToggleDisabledStroke end
+			end)
+
+			o.CurrentValue = state o.Type = "Toggle"
+			if o.Flag then Celestial.Flags[o.Flag] = o end
+			function o:Set(v) setState(v==true, false) end
+			return o
+		end
+
+		-- Slider (Rayfield API: Range, Increment, CurrentValue)
+		function Tab:CreateSlider(o)
+			local mn = (o.Range and o.Range[1]) or o.Min or 0
+			local mx = (o.Range and o.Range[2]) or o.Max or 100
+			local inc = o.Increment or o.Step or 1
+			local val = math.clamp(o.CurrentValue or o.Default or mn, mn, mx)
+			local hasDesc = o.Description and o.Description~=""
+			local row = glassRow(hasDesc and 76 or 66)
+			mk("TextLabel", {Position=UDim2.new(0,16,0,9), Size=UDim2.new(1,-84,0,18), BackgroundTransparency=1, Text=o.Name or "", TextColor3=theme.TextPrimary, Font=Enum.Font.Gotham, TextSize=13, TextXAlignment=Enum.TextXAlignment.Left}, row)
+			if hasDesc then mk("TextLabel", {Position=UDim2.new(0,16,0,27), Size=UDim2.new(1,-84,0,16), BackgroundTransparency=1, Text=o.Description, TextColor3=theme.TextMuted, Font=Enum.Font.Gotham, TextSize=10, TextXAlignment=Enum.TextXAlignment.Left}, row) end
+			local valChip = mk("Frame", {Position=UDim2.new(1,-74,0,8), Size=UDim2.new(0,58,0,20), BackgroundColor3=theme.Accent, BackgroundTransparency=0.82}, row) cor(6, valChip)
+			local valLbl = mk("TextLabel", {Size=UDim2.new(1,0,1,0), BackgroundTransparency=1, TextColor3=theme.Accent, Font=Enum.Font.GothamBold, TextSize=11}, valChip)
+			local trackY = hasDesc and 52 or 42
+			local trackBg = mk("Frame", {Position=UDim2.new(0,16,0,trackY), Size=UDim2.new(1,-32,0,5), BackgroundColor3=theme.SliderTrack, BackgroundTransparency=0}, row) cor(5, trackBg)
+			local fillF = mk("Frame", {Size=UDim2.new((val-mn)/(mx-mn),0,1,0), BackgroundColor3=theme.SliderFill}, trackBg) cor(5, fillF)
+			local thumb = mk("Frame", {Size=UDim2.new(0,15,0,15), Position=UDim2.new((val-mn)/(mx-mn),-7,0.5,-7), BackgroundColor3=rgb(255,255,255), ZIndex=5}, trackBg) cor(8, thumb)
+			str(theme.Accent, 2, 0.1, thumb)
+
+			local function snapTo(v)
+				v=math.clamp(math.round((v-mn)/inc)*inc+mn, mn, mx) val=v
+				local decimals=0 local ss=tostring(inc) local dot=ss:find("%.") if dot then decimals=#ss-dot end
+				local pct=(v-mn)/(mx-mn)
+				tf(fillF, TF, {Size=UDim2.new(pct,0,1,0)}) tf(thumb, TF, {Position=UDim2.new(pct,-7,0.5,-7)})
+				valLbl.Text=(decimals>0 and string.format("%."..decimals.."f",v) or tostring(v))..(o.Suffix and " "..o.Suffix or "")
+				local ok, err = pcall(o.Callback, v)
+				if not ok then warn("[Celestial] Slider '"..tostring(o.Name).."' error: "..tostring(err)) end
+				if o.Flag then o.CurrentValue=v Celestial.Flags[o.Flag]=o saveConfig() end
+			end
+			snapTo(val)
+
+			local dragging=false
+			local function onInput(i)
+				local rel=math.clamp((i.Position.X-trackBg.AbsolutePosition.X)/trackBg.AbsoluteSize.X,0,1)
+				snapTo(mn+rel*(mx-mn))
+			end
+			trackBg.InputBegan:Connect(function(i)
+				if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
+					dragging=true onInput(i)
+					tf(thumb, TF, {Size=UDim2.new(0,19,0,19), Position=UDim2.new((val-mn)/(mx-mn),-9,0.5,-9)})
+				end
+			end)
+			maid:add(UIS.InputChanged:Connect(function(i)
+				if not dragging then return end
+				if i.UserInputType~=Enum.UserInputType.MouseMovement and i.UserInputType~=Enum.UserInputType.Touch then return end
+				onInput(i)
+			end))
+			maid:add(UIS.InputEnded:Connect(function(i)
+				if (i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch) and dragging then
+					dragging=false tf(thumb, TF, {Size=UDim2.new(0,15,0,15), Position=UDim2.new((val-mn)/(mx-mn),-7,0.5,-7)})
+				end
+			end))
+
+			Win:_onTC(function(newT)
+				tf(trackBg, TM, {BackgroundColor3=newT.SliderTrack}) tf(fillF, TM, {BackgroundColor3=newT.SliderFill})
+				valLbl.TextColor3=newT.Accent valChip.BackgroundColor3=newT.Accent
+				local ts2=thumb:FindFirstChildWhichIsA("UIStroke") if ts2 then ts2.Color=newT.Accent end
+			end)
+
+			o.CurrentValue = val o.Type = "Slider"
+			if o.Flag then Celestial.Flags[o.Flag] = o end
+			function o:Set(v) snapTo(v) end
+			return o
+		end
+
+		-- Input (Rayfield API: CurrentValue, PlaceholderText, RemoveTextAfterFocusLost)
+		function Tab:CreateInput(o)
+			local row = glassRow(50)
+			mk("TextLabel", {Position=UDim2.new(0,16,0,0), Size=UDim2.new(0,110,1,0), BackgroundTransparency=1, Text=o.Name or "", TextColor3=theme.TextPrimary, Font=Enum.Font.Gotham, TextSize=13, TextXAlignment=Enum.TextXAlignment.Left}, row)
+			local field = mk("Frame", {Position=UDim2.new(0,130,0.5,-15), Size=UDim2.new(1,-146,0,30), BackgroundColor3=theme.InputBackground, BackgroundTransparency=0.05}, row) cor(8, field)
+			local fs = str(theme.InputStroke, 1, 0.4, field)
+			local box = mk("TextBox", {Size=UDim2.new(1,-18,1,0), Position=UDim2.new(0,9,0,0), BackgroundTransparency=1, Text=o.CurrentValue or "", PlaceholderText=o.PlaceholderText or o.Placeholder or "", PlaceholderColor3=theme.PlaceholderColor, TextColor3=theme.TextPrimary, Font=Enum.Font.Gotham, TextSize=12, ClearTextOnFocus=false}, field)
+			box.Focused:Connect(function() if fs then tf(fs, TF, {Color=theme.Accent, Transparency=0.2}) end end)
+			box.FocusLost:Connect(function(enter)
+				if fs then tf(fs, TF, {Color=theme.InputStroke, Transparency=0.4}) end
+				if enter or true then
+					local v = box.Text
+					o.CurrentValue = v
+					local ok, err = pcall(o.Callback, v)
+					if not ok then warn("[Celestial] Input '"..tostring(o.Name).."' error: "..tostring(err)) end
+					if o.RemoveTextAfterFocusLost then box.Text="" end
+					if o.Flag then Celestial.Flags[o.Flag]=o saveConfig() end
+				end
+			end)
+			Win:_onTC(function(newT) field.BackgroundColor3=newT.InputBackground if fs then fs.Color=newT.InputStroke end box.TextColor3=newT.TextPrimary box.PlaceholderColor3=newT.PlaceholderColor end)
+			o.CurrentValue = o.CurrentValue or "" o.Type = "Input"
+			if o.Flag then Celestial.Flags[o.Flag] = o end
+			function o:Set(v) box.Text=tostring(v) o.CurrentValue=tostring(v) end
+			return o
+		end
+
+		-- Dropdown (Rayfield API: CurrentOption, MultipleOptions)
+		function Tab:CreateDropdown(o)
+			local multi = o.MultipleOptions == true or o.Multi == true
+			local selected = {}
+			if o.CurrentOption then
+				if type(o.CurrentOption)=="string" then selected={o.CurrentOption}
+				else selected=o.CurrentOption end
+			elseif o.Default then
+				selected=type(o.Default)=="string" and {o.Default} or {o.Default}
+			end
+			if not multi then selected={selected[1] or (o.Options and o.Options[1]) or ""} end
+
+			local isOpen=false
+			local container = mk("Frame", {Name="Dropdown", Size=UDim2.new(1,0,0,50), BackgroundColor3=theme.ElementBackground, BackgroundTransparency=0, ClipsDescendants=false, ZIndex=10, LayoutOrder=nextOrder()}, frame)
+			cor(12, container) str(theme.ElementStroke, 1, 0.3, container)
+			mk("TextLabel", {Position=UDim2.new(0,16,0,0), Size=UDim2.new(0,110,1,0), BackgroundTransparency=1, Text=o.Name or "", TextColor3=theme.TextPrimary, Font=Enum.Font.Gotham, TextSize=13, TextXAlignment=Enum.TextXAlignment.Left, ZIndex=11}, container)
+			local selBtn = mk("TextButton", {Position=UDim2.new(0,130,0.5,-15), Size=UDim2.new(1,-146,0,30), BackgroundColor3=theme.InputBackground, BackgroundTransparency=0.05, Text=multi and (#selected>1 and "Various" or selected[1] or "None") or (selected[1] or "None"), TextColor3=theme.TextSecondary, Font=Enum.Font.Gotham, TextSize=12, AutoButtonColor=false, ZIndex=11}, container) cor(8, selBtn)
+			str(theme.InputStroke, 1, 0.4, selBtn) pd(11,26,0,0, selBtn)
+			local chev = mk("TextLabel", {Position=UDim2.new(1,-22,0.5,-7), Size=UDim2.new(0,14,0,14), BackgroundTransparency=1, Text="⌄", TextColor3=theme.TextMuted, Font=Enum.Font.GothamBold, TextSize=14, ZIndex=12}, selBtn)
+
+			local panel = mk("Frame", {BackgroundColor3=theme.Background, BackgroundTransparency=0.03, ClipsDescendants=true, Visible=false, ZIndex=250}, overlay)
+			cor(10, panel) str(theme.StrokeLight or theme.ElementStroke, 1, 0.7, panel)
+			ll(Enum.FillDirection.Vertical, Enum.SortOrder.LayoutOrder, 3, panel) pd(5,5,5,5, panel)
+
+			local popupEntry={_isOpen=false, _container=panel, _trigger=selBtn, _clickOutside=nil}
+			table.insert(openPopups, popupEntry)
+
+			local tc1, tc2
+			local function posPanel()
+				local ap=selBtn.AbsolutePosition local as=selBtn.AbsoluteSize local ss=overlay.AbsoluteSize
+				local pH=#(o.Options or {})*35+10
+				local px=math.clamp(ap.X,4,ss.X-as.X-4)
+				local py=ap.Y+as.Y+6
+				if py+pH>ss.Y-6 and ap.Y-pH-6>=6 then py=ap.Y-pH-6 end
+				panel.Position=UDim2.new(0,px,0,py) panel.Size=UDim2.new(0,as.X,0,panel.Size.Y.Offset)
+			end
+			local function startTrack()
+				if tc1 then tc1:Disconnect() end if tc2 then tc2:Disconnect() end
+				tc1=win:GetPropertyChangedSignal("Position"):Connect(function() if popupEntry._isOpen then posPanel() end end)
+				tc2=frame:GetPropertyChangedSignal("CanvasPosition"):Connect(function() if popupEntry._isOpen then posPanel() end end)
+			end
+			local function stopTrack()
+				if tc1 then tc1:Disconnect() tc1=nil end if tc2 then tc2:Disconnect() tc2=nil end
+			end
+
+			local function updateSelected()
+				if multi then selBtn.Text=#selected>1 and "Various" or (#selected==1 and selected[1] or "None")
+				else selBtn.Text=selected[1] or "None" end
+			end
+
+			local function buildItems(opts2)
+				for _, c in ipairs(panel:GetChildren()) do if c:IsA("TextButton") then c:Destroy() end end
+				for idx, opt in ipairs(opts2) do
+					local active=table.find(selected, opt)~=nil
+					local item=mk("TextButton", {Size=UDim2.new(1,0,0,32), LayoutOrder=idx, BackgroundColor3=active and theme.DropdownSelected or theme.DropdownUnselected, Text=opt, TextColor3=active and theme.TextPrimary or theme.TextSecondary, Font=active and Enum.Font.GothamBold or Enum.Font.Gotham, TextSize=12, AutoButtonColor=false, TextXAlignment=Enum.TextXAlignment.Left, ZIndex=251}, panel) cor(7,item) pd(12,0,0,0,item)
+					item.MouseEnter:Connect(function() if not active then tf(item,TF,{BackgroundColor3=theme.ElementBackgroundHover}) end end)
+					item.MouseLeave:Connect(function() if not active then tf(item,TF,{BackgroundColor3=theme.DropdownUnselected}) end end)
+					item.MouseButton1Click:Connect(function()
+						if multi then
+							local idx2=table.find(selected,opt)
+							if idx2 then table.remove(selected,idx2) else table.insert(selected,opt) end
+							updateSelected()
+							local ok, err = pcall(o.Callback, selected)
+							if not ok then warn("[Celestial] Dropdown '"..tostring(o.Name).."' error: "..tostring(err)) end
+						else
+							selected={opt} updateSelected()
+							isOpen=false popupEntry._isOpen=false stopTrack()
+							tf(chev,TF,{Rotation=0}) tf(panel,TF,{Size=UDim2.new(0,panel.Size.X.Offset,0,0)})
+							task.delay(0.18, function() panel.Visible=false end)
+							local ok, err = pcall(o.Callback, selected)
+							if not ok then warn("[Celestial] Dropdown '"..tostring(o.Name).."' error: "..tostring(err)) end
+						end
+						if o.Flag then o.CurrentOption=selected Celestial.Flags[o.Flag]=o saveConfig() end
+						buildItems(opts2)
+					end)
+				end
+				panel.Size=UDim2.new(0,panel.Size.X.Offset,0,#opts2*35+10)
+			end
+
+			local function closeDD()
+				if not isOpen then return end isOpen=false popupEntry._isOpen=false stopTrack()
+				tf(chev,TF,{Rotation=0}) tf(panel,TF,{Size=UDim2.new(0,panel.Size.X.Offset,0,0)})
+				task.delay(0.18,function() panel.Visible=false end)
+			end
+			popupEntry._clickOutside=closeDD
+
+			selBtn.MouseButton1Click:Connect(function()
+				isOpen=not isOpen
+				if isOpen then
+					posPanel() buildItems(o.Options or {}) panel.Visible=true panel.Size=UDim2.new(0,panel.Size.X.Offset,0,0)
+					popupEntry._isOpen=true startTrack()
+					tf(panel, TSO, {Size=UDim2.new(0,panel.Size.X.Offset,0,#(o.Options or {})*35+10)})
+					tf(chev, TM, {Rotation=180})
+				else closeDD() end
+			end)
+
+			container.MouseEnter:Connect(function() tf(container,TF,{BackgroundColor3=theme.ElementBackgroundHover}) end)
+			container.MouseLeave:Connect(function() tf(container,TF,{BackgroundColor3=theme.ElementBackground}) end)
+			Win:_onTC(function(newT) container.BackgroundColor3=newT.ElementBackground panel.BackgroundColor3=newT.Background end)
+
+			o.CurrentOption=selected o.Type="Dropdown"
+			if o.Flag then Celestial.Flags[o.Flag]=o end
+			function o:Set(v)
+				selected=type(v)=="string" and {v} or v updateSelected()
+				local ok, err = pcall(o.Callback, selected)
+				if not ok then warn("[Celestial] Dropdown '"..tostring(o.Name).."' error: "..tostring(err)) end
+				if o.Flag then o.CurrentOption=selected Celestial.Flags[o.Flag]=o saveConfig() end
+			end
+			function o:Refresh(newOpts) o.Options=newOpts if isOpen then posPanel() buildItems(newOpts) end end
+			return o
+		end
+
+		-- Color Picker (Rayfield API: Color)
+		function Tab:CreateColorPicker(o)
+			local color = o.Color or o.Default or rgb(255,255,255)
+			local pickerOpen=false local picker=nil
+			local row=glassRow(50)
+			mk("TextLabel", {Position=UDim2.new(0,16,0,0), Size=UDim2.new(1,-92,1,0), BackgroundTransparency=1, Text=o.Name or "", TextColor3=theme.TextPrimary, Font=Enum.Font.Gotham, TextSize=13, TextXAlignment=Enum.TextXAlignment.Left}, row)
+			local preview=mk("TextButton", {Size=UDim2.new(0,40,0,26), Position=UDim2.new(1,-52,0.5,-13), BackgroundColor3=color, Text="", AutoButtonColor=false, ZIndex=5}, row) cor(7,preview)
+			str(theme.StrokeLight, 1.5, theme.StrokeLightTrans, preview)
+
+			local popupEntry={_isOpen=false, _container=nil, _trigger=preview, _clickOutside=nil}
+			table.insert(openPopups, popupEntry)
+
+			local function closePicker()
+				if not pickerOpen then return end pickerOpen=false popupEntry._isOpen=false
+				if picker then tf(picker,TF,{Size=UDim2.new(0,210,0,0)}) task.delay(0.2,function() if picker then picker:Destroy() picker=nil end end) end
+			end
+			popupEntry._clickOutside=closePicker
+
+			preview.MouseButton1Click:Connect(function()
+				pickerOpen=not pickerOpen if picker then picker:Destroy() picker=nil end
+				if not pickerOpen then popupEntry._isOpen=false return end
+				local ap=preview.AbsolutePosition local as=preview.AbsoluteSize local ss=overlay.AbsoluteSize
+				local px=math.clamp(ap.X-172,4,ss.X-214) local py=ap.Y+as.Y+6
+				if py+148>ss.Y-4 and ap.Y-148-6>=4 then py=ap.Y-148-6 end
+				picker=mk("Frame", {Size=UDim2.new(0,210,0,0), Position=UDim2.new(0,px,0,py), BackgroundColor3=theme.Background, BackgroundTransparency=0.03, ZIndex=250, ClipsDescendants=false}, overlay)
+				cor(12,picker) str(theme.StrokeLight,1,theme.StrokeLightTrans,picker)
+				popupEntry._container=picker popupEntry._isOpen=true
+				tf(picker, TSO, {Size=UDim2.new(0,210,0,148)})
+
+				local h,s,v2=Color3.toHSV(color)
+				local function applyHSV()
+					color=Color3.fromHSV(h,s,v2) preview.BackgroundColor3=color
+					local ok, err = pcall(o.Callback, color)
+					if not ok then warn("[Celestial] ColorPicker '"..tostring(o.Name).."' error: "..tostring(err)) end
+					if o.Flag then o.Color=color Celestial.Flags[o.Flag]=o saveConfig() end
+				end
+				local function mkSlider(label, yPos, gradSeq, initVal, cb)
+					mk("TextLabel", {Position=UDim2.new(0,12,0,yPos), Size=UDim2.new(1,-24,0,14), BackgroundTransparency=1, Text=label, TextColor3=theme.TextSecondary, Font=Enum.Font.Gotham, TextSize=11, TextXAlignment=Enum.TextXAlignment.Left, ZIndex=251}, picker)
+					local track=mk("Frame", {Position=UDim2.new(0,12,0,yPos+16), Size=UDim2.new(1,-24,0,10), BackgroundColor3=rgb(200,200,200), ZIndex=251}, picker) cor(5,track)
+					mk("UIGradient",{Color=gradSeq},track)
+					local tumb=mk("Frame", {Size=UDim2.new(0,12,0,12), Position=UDim2.new(initVal,-6,0.5,-6), BackgroundColor3=rgb(255,255,255), ZIndex=252}, track) cor(6,tumb) str(rgb(0,0,0),1,0.7,tumb)
+					local pd2=false
+					track.InputBegan:Connect(function(i)
+						if i.UserInputType~=Enum.UserInputType.MouseButton1 then return end pd2=true
+						local pv=math.clamp((i.Position.X-track.AbsolutePosition.X)/track.AbsoluteSize.X,0,1)
+						tumb.Position=UDim2.new(pv,-6,0.5,-6) cb(pv)
+					end)
+					maid:add(UIS.InputChanged:Connect(function(i)
+						if not pd2 or i.UserInputType~=Enum.UserInputType.MouseMovement then return end
+						local pv=math.clamp((i.Position.X-track.AbsolutePosition.X)/track.AbsoluteSize.X,0,1)
+						tumb.Position=UDim2.new(pv,-6,0.5,-6) cb(pv)
+					end))
+					maid:add(UIS.InputEnded:Connect(function(i) if i.UserInputType==Enum.UserInputType.MouseButton1 then pd2=false end end))
+				end
+				mkSlider("Hue",10,ColorSequence.new({ColorSequenceKeypoint.new(0,rgb(255,0,0)),ColorSequenceKeypoint.new(0.167,rgb(255,255,0)),ColorSequenceKeypoint.new(0.333,rgb(0,255,0)),ColorSequenceKeypoint.new(0.5,rgb(0,255,255)),ColorSequenceKeypoint.new(0.667,rgb(0,0,255)),ColorSequenceKeypoint.new(0.833,rgb(255,0,255)),ColorSequenceKeypoint.new(1,rgb(255,0,0))}),h,function(pv) h=pv applyHSV() end)
+				mkSlider("Saturation",48,ColorSequence.new(rgb(255,255,255),Color3.fromHSV(h,1,1)),s,function(pv) s=pv applyHSV() end)
+				mkSlider("Brightness",86,ColorSequence.new(rgb(0,0,0),rgb(255,255,255)),v2,function(pv) v2=pv applyHSV() end)
+			end)
+
+			o.Color=color o.Type="ColorPicker"
+			if o.Flag then Celestial.Flags[o.Flag]=o end
+			function o:Set(c) color=c preview.BackgroundColor3=c o.Color=c local ok,err=pcall(o.Callback,c) if not ok then warn("[Celestial] ColorPicker '"..tostring(o.Name).."' error: "..tostring(err)) end if o.Flag then Celestial.Flags[o.Flag]=o saveConfig() end end
+			return o
+		end
+
+		-- Keybind (Rayfield API: CurrentKeybind, HoldToInteract, CallOnChange)
+		function Tab:CreateKeybind(o)
+			local key = o.CurrentKeybind or (o.Default and o.Default.Name) or "None"
+			local binding=false
+			local row=glassRow(50)
+			mk("TextLabel", {Position=UDim2.new(0,16,0,0), Size=UDim2.new(1,-114,1,0), BackgroundTransparency=1, Text=o.Name or "", TextColor3=theme.TextPrimary, Font=Enum.Font.Gotham, TextSize=13, TextXAlignment=Enum.TextXAlignment.Left}, row)
+			local keyBtn=mk("TextButton", {Size=UDim2.new(0,84,0,28), Position=UDim2.new(1,-94,0.5,-14), BackgroundColor3=theme.InputBackground, BackgroundTransparency=0.05, Text=tostring(key), TextColor3=theme.Accent, Font=Enum.Font.GothamBold, TextSize=11, AutoButtonColor=false, ZIndex=5}, row) cor(8,keyBtn)
+			str(theme.Accent,1,0.45,keyBtn)
+			local function cancelBind() binding=false keyBtn.Text=tostring(key) tf(keyBtn,TF,{BackgroundTransparency=0.05}) end
+			keyBtn.MouseButton1Click:Connect(function()
+				if binding then cancelBind() return end
+				binding=true keyBtn.Text="..." tf(keyBtn,TF,{BackgroundTransparency=0.45})
+			end)
+
+			local conn=UIS.InputBegan:Connect(function(i, gpe)
+				if gpe then return end
+				if binding then
+					if i.UserInputType==Enum.UserInputType.Keyboard or i.UserInputType==Enum.UserInputType.Gamepad1 then
+						local splits=string.split(tostring(i.KeyCode),".")
+						key=splits[3] or tostring(i.KeyCode) cancelBind()
+						if o.CallOnChange then local ok,err=pcall(o.Callback,key) if not ok then warn("[Celestial] Keybind '"..tostring(o.Name).."' error: "..tostring(err)) end end
+						if o.Flag then o.CurrentKeybind=key Celestial.Flags[o.Flag]=o saveConfig() end
+					elseif i.UserInputType==Enum.UserInputType.Touch then cancelBind() end
+				elseif not o.CallOnChange and key~="None" and key~="" then
+					local ok2,kc=pcall(function() return Enum.KeyCode[key] end)
+					if ok2 and kc and i.KeyCode==kc and not gpe then
+						if o.HoldToInteract then
+							local held=true local hc2
+							hc2=i.Changed:Connect(function(p) if p=="UserInputState" then hc2:Disconnect() held=false end end)
+							task.wait(0.25)
+							if held then
+								local loop local lc=Run.Stepped:Connect(function()
+									if not held then pcall(o.Callback,false) lc:Disconnect()
+									else pcall(o.Callback,true) end
+								end)
+							end
+						else
+							local ok3,err=pcall(o.Callback)
+							if not ok3 then warn("[Celestial] Keybind '"..tostring(o.Name).."' error: "..tostring(err)) end
+						end
+					end
+				end
+			end)
+			table.insert(_keybindConns, conn)
+
+			Win:_onTC(function(newT) keyBtn.TextColor3=newT.Accent local ks2=keyBtn:FindFirstChildWhichIsA("UIStroke") if ks2 then ks2.Color=newT.Accent end end)
+			o.CurrentKeybind=key o.Type="Keybind"
+			if o.Flag then Celestial.Flags[o.Flag]=o end
+			function o:Set(k)
+				key=tostring(k) keyBtn.Text=key o.CurrentKeybind=key
+				if o.CallOnChange then local ok,err=pcall(o.Callback,key) if not ok then warn("[Celestial] Keybind '"..tostring(o.Name).."' error: "..tostring(err)) end end
+				if o.Flag then Celestial.Flags[o.Flag]=o saveConfig() end
+			end
+			return o
+		end
+
+		return Tab
+	end -- _createTab
+
+	function Win:CreateTab(name, icon, ext)
+		local tabOpts
+		if type(name)=="table" then tabOpts=name
+		else tabOpts={Name=name, Icon=icon} end
+		return self:_createTab(tabOpts, ext and tabScroll or nil)
+	end
+
+	-- Entrance animation (after key system)
+	local function showWindow()
+		win.Size=UDim2.new(0,0,0,0) win.Position=UDim2.new(0.5,0,0.5,0) win.BackgroundTransparency=1
+		task.wait()
+		tf(win, TSP, {Size=UDim2.new(0,W,0,H), Position=UDim2.new(0.5,-W/2,0.5,-H/2), BackgroundTransparency=T.WindowTrans})
+	end
+
+	-- Key system then show
+	if opts.KeySystem then
+		task.spawn(function()
+			task.wait(1.6) finishLoading()
+			runKeySystem(opts, T, function(passed)
+				if passed then
+					showWindow()
+				else
+					Celestial:Destroy()
+				end
+			end)
+		end)
+	else
+		task.spawn(function()
+			task.wait(1.6)
+			finishLoading()
+			showWindow()
+		end)
+	end
+
+	self.ActiveTheme = T
+	self._winObj = Win
+	table.insert(self.Windows, Win)
+	return Win
+end -- CreateWindow
+
+return Celestial
