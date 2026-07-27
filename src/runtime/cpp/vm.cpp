@@ -1,461 +1,413 @@
-// Luazi C++ Runtime Header
+// Luazi C++ Runtime Implementation
 // Optimized for WASM compilation with Emscripten
 // Zero-cost abstractions, cache-friendly data layouts
 
-#ifndef LUAZI_VM_H
-#define LUAZI_VM_H
-
-#include <cstdint>
-#include <cstddef>
-#include <cstring>
+#include "vm.h"
 #include <cmath>
-#include <vector>
-#include <string>
-#include <unordered_map>
-#include <memory>
-#include <functional>
-
-// Platform detection
-#ifdef __EMSCRIPTEN__
-    #define LZ_WASM 1
-    #include <emscripten.h>
-#else
-    #define LZ_NATIVE 1
-#endif
-
-// Force inline for hot paths
-#ifdef _MSC_VER
-    #define LZ_INLINE __forceinline
-#else
-    #define LZ_INLINE __attribute__((always_inline)) inline
-#endif
-
-// Branch prediction hints
-#define LZ_LIKELY(x)   __builtin_expect(!!(x), 1)
-#define LZ_UNLIKELY(x) __builtin_expect(!!(x), 0)
-
-// Cache line size (common on x86_64 and ARM64)
-#define LZ_CACHE_LINE 64
-#define LZ_ALIGN_CACHE __attribute__((aligned(LZ_CACHE_LINE)))
+#include <cstring>
 
 namespace luazi {
 
 // ============================================================================
-// VALUE SYSTEM - NaN Boxing (inspired by LuaJIT)
-// ============================================================================
-// Uses IEEE 754 NaN payload to store non-number values inline
-// Numbers: actual double
-// Everything else: encoded in the NaN payload
-
-enum class Type : uint8_t {
-    Nil      = 0,
-    Bool     = 1,
-    Number   = 2,
-    String   = 3,
-    Table    = 4,
-    Function = 5,
-    Thread   = 6,
-    UserData = 7,
-    LightUD  = 8
-};
-
-// NaN boxing constants
-static constexpr uint64_t LZ_NAN_MASK     = 0x7FF8000000000000ULL;
-static constexpr uint64_t LZ_TAG_NIL      = 0x7FF8000000000001ULL;
-static constexpr uint64_t LZ_TAG_FALSE    = 0x7FF8000000000002ULL;
-static constexpr uint64_t LZ_TAG_TRUE     = 0x7FF8000000000003ULL;
-static constexpr uint64_t LZ_TAG_STRING   = 0x7FF8000000000004ULL;
-static constexpr uint64_t LZ_TAG_TABLE    = 0x7FF8000000000005ULL;
-static constexpr uint64_t LZ_TAG_FUNCTION = 0x7FF8000000000006ULL;
-static constexpr uint64_t LZ_TAG_THREAD   = 0x7FF8000000000007ULL;
-static constexpr uint64_t LZ_TAG_PTR_MASK = 0x0000FFFFFFFFFFFFULL;
-
-class Value {
-    uint64_t bits;
-
-    LZ_INLINE bool is_nan_boxed() const noexcept {
-        return (bits & LZ_NAN_MASK) == LZ_NAN_MASK && bits != LZ_NAN_MASK;
-    }
-
-public:
-    Value() : bits(LZ_TAG_NIL) {}
-    explicit Value(double n) : bits(*reinterpret_cast<const uint64_t*>(&n)) {}
-    explicit Value(bool b) : bits(b ? LZ_TAG_TRUE : LZ_TAG_FALSE) {}
-    explicit Value(Type t, void* ptr) {
-        uint64_t tag = LZ_NAN_MASK;
-        switch(t) {
-            case Type::String:   tag = LZ_TAG_STRING; break;
-            case Type::Table:    tag = LZ_TAG_TABLE; break;
-            case Type::Function: tag = LZ_TAG_FUNCTION; break;
-            case Type::Thread:   tag = LZ_TAG_THREAD; break;
-            default: break;
-        }
-        bits = tag | (reinterpret_cast<uint64_t>(ptr) & LZ_TAG_PTR_MASK);
-    }
-
-    LZ_INLINE Type type() const noexcept {
-        if (!is_nan_boxed()) return Type::Number;
-        switch(bits & ~LZ_TAG_PTR_MASK) {
-            case LZ_TAG_NIL:      return Type::Nil;
-            case LZ_TAG_FALSE:
-            case LZ_TAG_TRUE:     return Type::Bool;
-            case LZ_TAG_STRING:   return Type::String;
-            case LZ_TAG_TABLE:    return Type::Table;
-            case LZ_TAG_FUNCTION: return Type::Function;
-            case LZ_TAG_THREAD:   return Type::Thread;
-            default:              return Type::UserData;
-        }
-    }
-
-    LZ_INLINE bool is_nil() const noexcept     { return bits == LZ_TAG_NIL; }
-    LZ_INLINE bool is_bool() const noexcept    { return bits == LZ_TAG_FALSE || bits == LZ_TAG_TRUE; }
-    LZ_INLINE bool is_number() const noexcept  { return !is_nan_boxed(); }
-    LZ_INLINE bool is_string() const noexcept  { return (bits & ~LZ_TAG_PTR_MASK) == LZ_TAG_STRING; }
-    LZ_INLINE bool is_table() const noexcept   { return (bits & ~LZ_TAG_PTR_MASK) == LZ_TAG_TABLE; }
-    LZ_INLINE bool is_function() const noexcept{ return (bits & ~LZ_TAG_PTR_MASK) == LZ_TAG_FUNCTION; }
-
-    LZ_INLINE double as_number() const noexcept {
-        return *reinterpret_cast<const double*>(&bits);
-    }
-
-    LZ_INLINE bool as_bool() const noexcept {
-        if (is_nil()) return false;
-        if (is_bool()) return bits == LZ_TAG_TRUE;
-        if (is_number()) return as_number() != 0.0;
-        return true; // Everything else is truthy
-    }
-
-    LZ_INLINE void* as_ptr() const noexcept {
-        return reinterpret_cast<void*>(bits & LZ_TAG_PTR_MASK);
-    }
-
-    LZ_INLINE bool operator==(const Value& other) const noexcept {
-        if (bits == other.bits) return true;
-        if (is_number() && other.is_number())
-            return as_number() == other.as_number();
-        return false;
-    }
-
-    static Value nil() { return Value(); }
-    static Value from_bool(bool b) { return Value(b); }
-    static Value from_number(double n) { return Value(n); }
-};
-
-// ============================================================================
-// ARENA ALLOCATOR - Bump pointer allocation, O(1) free-all
+// VM IMPLEMENTATION
 // ============================================================================
 
-class Arena {
-    struct Block {
-        uint8_t* data;
-        size_t size;
-        size_t used;
-        Block* next;
-    };
+void VM::load(const uint8_t* bytecode, size_t len) {
+  if (len < 12) {
+    throw std::runtime_error("Bytecode too small");
+  }
 
-    Block* current;
-    Block* blocks;
-    size_t block_size;
+  // Parse header
+  uint32_t magic = *reinterpret_cast<const uint32_t*>(bytecode);
+  if (magic != 0x4C5A494D) {
+    throw std::runtime_error("Invalid bytecode magic");
+  }
 
-public:
-    explicit Arena(size_t block_sz = 65536) : block_size(block_sz) {
-        current = blocks = alloc_block(block_sz);
+  uint8_t version = bytecode[4];
+  uint8_t flags = bytecode[5];
+  uint16_t constCount = *reinterpret_cast<const uint16_t*>(bytecode + 6);
+  uint16_t protoCount = *reinterpret_cast<const uint16_t*>(bytecode + 8);
+  uint32_t codeSize = *reinterpret_cast<const uint32_t*>(bytecode + 10);
+
+  size_t offset = 12;
+
+  // Load constants
+  for (uint16_t i = 0; i < constCount && i < CONST_POOL; i++) {
+    uint8_t type = bytecode[offset++];
+    switch (type) {
+      case 0: // nil
+        constants[i] = Value::nil();
+        break;
+      case 1: { // number
+        double val = *reinterpret_cast<const double*>(bytecode + offset);
+        offset += 8;
+        constants[i] = Value::from_number(val);
+        break;
+      }
+      case 2: // true
+        constants[i] = Value::from_bool(true);
+        break;
+      case 3: { // string
+        uint32_t slen = *reinterpret_cast<const uint32_t*>(bytecode + offset);
+        offset += 4;
+        String* s = arena.construct<String>(arena, reinterpret_cast<const char*>(bytecode + offset), slen);
+        offset += slen;
+        constants[i] = Value(Type::String, s);
+        break;
+      }
+    }
+  }
+
+  // Skip proto table and proto data for now
+  for (uint16_t i = 0; i < protoCount; i++) {
+    offset += 8;
+  }
+
+  // Skip proto data
+  for (uint16_t i = 0; i < protoCount; i++) {
+    uint32_t pConsts = *reinterpret_cast<const uint32_t*>(bytecode + offset);
+    offset += 4;
+    uint32_t pInsts = *reinterpret_cast<const uint32_t*>(bytecode + offset);
+    offset += 4;
+    uint32_t pUpvals = *reinterpret_cast<const uint32_t*>(bytecode + offset);
+    offset += 4;
+    uint32_t pParams = *reinterpret_cast<const uint32_t*>(bytecode + offset);
+    offset += 4;
+
+    for (uint32_t j = 0; j < pConsts; j++) {
+      uint8_t type = bytecode[offset++];
+      if (type == 1) offset += 8;
+      else if (type == 3) {
+        uint32_t slen = *reinterpret_cast<const uint32_t*>(bytecode + offset);
+        offset += 4 + slen;
+      }
     }
 
-    ~Arena() {
-        while (blocks) {
-            Block* next = blocks->next;
-            delete[] blocks->data;
-            delete blocks;
-            blocks = next;
+    offset += pInsts * 4 + pUpvals * 4;
+
+    for (uint32_t j = 0; j < pUpvals; j++) {
+      offset += 4;
+      uint8_t nameLen = bytecode[offset++];
+      offset += nameLen;
+    }
+  }
+
+  // Load code
+  code_size = codeSize / 4;
+  code = arena.construct<Instruction[]>(code_size);
+  for (size_t i = 0; i < code_size; i++) {
+    code[i].raw = *reinterpret_cast<const uint32_t*>(bytecode + offset + i * 4);
+  }
+
+  pc = 0;
+  sp = 0;
+  fp = 0;
+}
+
+Value VM::execute() {
+  while (pc < code_size) {
+    const Instruction& i = code[pc++];
+
+    switch (i.op()) {
+      case OpCode::NOP:
+        break;
+
+      case OpCode::LOADK:
+        reg(i.a()) = constants[i.b()];
+        break;
+
+      case OpCode::LOADNIL:
+        reg(i.a()) = Value::nil();
+        break;
+
+      case OpCode::LOADBOOL:
+        reg(i.a()) = Value::from_bool(i.b() != 0);
+        if (i.c() != 0) pc++;
+        break;
+
+      case OpCode::LOADINT:
+        reg(i.a()) = Value::from_number(static_cast<int16_t>(i.sbx()));
+        break;
+
+      case OpCode::MOVE:
+        reg(i.a()) = reg(i.b());
+        break;
+
+      case OpCode::GETGLOBAL: {
+        const String* name = reinterpret_cast<const String*>(constants[i.b()].as_ptr());
+        Value* val = globals.get(name);
+        reg(i.a()) = val ? *val : Value::nil();
+        break;
+      }
+
+      case OpCode::SETGLOBAL: {
+        const String* name = reinterpret_cast<const String*>(constants[i.b()].as_ptr());
+        globals.set(*name, reg(i.a()));
+        break;
+      }
+
+      case OpCode::GETTABLE: {
+        Value tbl = reg(i.b());
+        Value key = (i.c() & 0x100) ? constants[i.c() & 0xFF] : reg(i.c());
+        if (tbl.is_table()) {
+          Table<Value, Value>* t = reinterpret_cast<Table<Value, Value>*>(tbl.as_ptr());
+          Value* val = t->get(key);
+          reg(i.a()) = val ? *val : Value::nil();
+        } else {
+          reg(i.a()) = Value::nil();
         }
-    }
+        break;
+      }
 
-    LZ_INLINE void* alloc(size_t size) {
-        size = (size + 7) & ~size_t(7); // 8-byte align
-        if (LZ_UNLIKELY(current->used + size > current->size)) {
-            grow(size);
+      case OpCode::SETTABLE: {
+        Value tbl = reg(i.a());
+        Value key = (i.b() & 0x100) ? constants[i.b() & 0xFF] : reg(i.b());
+        Value val = (i.c() & 0x100) ? constants[i.c() & 0xFF] : reg(i.c());
+        if (tbl.is_table()) {
+          Table<Value, Value>* t = reinterpret_cast<Table<Value, Value>*>(tbl.as_ptr());
+          t->set(key, val);
         }
-        void* ptr = current->data + current->used;
-        current->used += size;
-        return ptr;
-    }
+        break;
+      }
 
-    template<typename T, typename... Args>
-    LZ_INLINE T* construct(Args&&... args) {
-        void* mem = alloc(sizeof(T));
-        return new(mem) T(std::forward<Args>(args)...);
-    }
+      case OpCode::NEWTABLE:
+        reg(i.a()) = Value(Type::Table, arena.construct<Table<Value, Value>>(arena));
+        break;
 
-    void reset() {
-        for (Block* b = blocks; b; b = b->next) {
-            b->used = 0;
+      case OpCode::ADD: {
+        double left = reg(i.b()).as_number();
+        double right = reg(i.c()).as_number();
+        reg(i.a()) = Value::from_number(left + right);
+        break;
+      }
+
+      case OpCode::SUB: {
+        double left = reg(i.b()).as_number();
+        double right = reg(i.c()).as_number();
+        reg(i.a()) = Value::from_number(left - right);
+        break;
+      }
+
+      case OpCode::MUL: {
+        double left = reg(i.b()).as_number();
+        double right = reg(i.c()).as_number();
+        reg(i.a()) = Value::from_number(left * right);
+        break;
+      }
+
+      case OpCode::DIV: {
+        double left = reg(i.b()).as_number();
+        double right = reg(i.c()).as_number();
+        if (right == 0.0) {
+          throw std::runtime_error("Division by zero");
         }
-        current = blocks;
-    }
+        reg(i.a()) = Value::from_number(left / right);
+        break;
+      }
 
-private:
-    Block* alloc_block(size_t sz) {
-        Block* b = new Block;
-        b->data = new uint8_t[sz];
-        b->size = sz;
-        b->used = 0;
-        b->next = nullptr;
-        return b;
-    }
+      case OpCode::MOD: {
+        double left = reg(i.b()).as_number();
+        double right = reg(i.c()).as_number();
+        reg(i.a()) = Value::from_number(std::fmod(left, right));
+        break;
+      }
 
-    void grow(size_t minimum) {
-        size_t new_size = std::max(block_size, minimum);
-        Block* b = alloc_block(new_size);
-        current->next = b;
-        current = b;
+      case OpCode::POW: {
+        double left = reg(i.b()).as_number();
+        double right = reg(i.c()).as_number();
+        reg(i.a()) = Value::from_number(std::pow(left, right));
+        break;
+      }
+
+      case OpCode::UNM: {
+        double val = reg(i.b()).as_number();
+        reg(i.a()) = Value::from_number(-val);
+        break;
+      }
+
+      case OpCode::NOT: {
+        bool val = reg(i.b()).as_bool();
+        reg(i.a()) = Value::from_bool(!val);
+        break;
+      }
+
+      case OpCode::LEN: {
+        Value val = reg(i.b());
+        if (val.is_string()) {
+          const String* s = reinterpret_cast<const String*>(val.as_ptr());
+          reg(i.a()) = Value::from_number(static_cast<double>(s->length()));
+        } else if (val.is_table()) {
+          Table<Value, Value>* t = reinterpret_cast<Table<Value, Value>*>(val.as_ptr());
+          reg(i.a()) = Value::from_number(static_cast<double>(t->size()));
+        } else {
+          reg(i.a()) = Value::from_number(0);
+        }
+        break;
+      }
+
+      case OpCode::CONCAT: {
+        // Simplified: just concatenate two values for now
+        std::string result = "";
+        for (int j = i.b(); j <= i.c(); j++) {
+          Value val = reg(j);
+          if (val.is_string()) {
+            const String* s = reinterpret_cast<const String*>(val.as_ptr());
+            result += s->c_str();
+          } else if (val.is_number()) {
+            result += std::to_string(val.as_number());
+          }
+        }
+        String* s = arena.construct<String>(arena, result.c_str(), result.length());
+        reg(i.a()) = Value(Type::String, s);
+        break;
+      }
+
+      case OpCode::JMP:
+        pc += static_cast<int16_t>(i.sbx());
+        break;
+
+      case OpCode::EQ: {
+        Value left = reg(i.b());
+        Value right = reg(i.c());
+        bool eq = (left == right);
+        if (eq != (i.a() != 0)) pc++;
+        break;
+      }
+
+      case OpCode::LT: {
+        double left = reg(i.b()).as_number();
+        double right = reg(i.c()).as_number();
+        if ((left < right) != (i.a() != 0)) pc++;
+        break;
+      }
+
+      case OpCode::LE: {
+        double left = reg(i.b()).as_number();
+        double right = reg(i.c()).as_number();
+        if ((left <= right) != (i.a() != 0)) pc++;
+        break;
+      }
+
+      case OpCode::TEST: {
+        bool val = reg(i.a()).as_bool();
+        if (val != (i.c() != 0)) pc++;
+        break;
+      }
+
+      case OpCode::TESTSET: {
+        Value val = reg(i.b());
+        if (val.as_bool() == (i.c() != 0)) {
+          reg(i.a()) = val;
+        } else {
+          pc++;
+        }
+        break;
+      }
+
+      case OpCode::CALL: {
+        // Simplified function call - just set result to nil for now
+        reg(i.a()) = Value::nil();
+        break;
+      }
+
+      case OpCode::TAILCALL: {
+        reg(i.a()) = Value::nil();
+        break;
+      }
+
+      case OpCode::RETURN: {
+        if (i.b() == 0) {
+          return reg(i.a());
+        }
+        if (i.b() == 1) {
+          return Value::nil();
+        }
+        return reg(i.a());
+      }
+
+      case OpCode::CLOSURE: {
+        // Create a function value
+        reg(i.a()) = Value(Type::Function, nullptr);
+        break;
+      }
+
+      case OpCode::FORLOOP: {
+        double idx = reg(i.a()).as_number() + reg(i.a() + 2).as_number();
+        double limit = reg(i.a() + 1).as_number();
+        double step = reg(i.a() + 2).as_number();
+        reg(i.a()) = Value::from_number(idx);
+        if ((step > 0 && idx <= limit) || (step < 0 && idx >= limit)) {
+          pc += static_cast<int16_t>(i.sbx());
+          reg(i.a() + 3) = Value::from_number(idx);
+        }
+        break;
+      }
+
+      case OpCode::FORPREP: {
+        double init = reg(i.a()).as_number();
+        double step = reg(i.a() + 2).as_number();
+        reg(i.a()) = Value::from_number(init - step);
+        pc += static_cast<int16_t>(i.sbx());
+        break;
+      }
+
+      case OpCode::TYPECHECK: {
+        // Simplified type check
+        reg(i.a()) = Value::from_bool(true);
+        break;
+      }
+
+      case OpCode::AWAIT: {
+        reg(i.a()) = reg(i.b());
+        break;
+      }
+
+      default:
+        // Unknown opcode - skip
+        break;
     }
-};
+  }
+
+  return Value::nil();
+}
 
 // ============================================================================
-// STRING INTERNING - Immutable strings, hash cached
+// C EXPORT INTERFACE
 // ============================================================================
 
-class String {
-    struct Data {
-        uint32_t hash;
-        uint32_t len;
-        char chars[1]; // Flexible array member
-    };
+extern "C" {
+  luazi::VM* luazi_create_vm() {
+    return new luazi::VM();
+  }
 
-    Data* data;
+  void luazi_destroy_vm(luazi::VM* vm) {
+    delete vm;
+  }
 
-public:
-    explicit String(Arena& arena, const char* s, size_t len) {
-        data = reinterpret_cast<Data*>(arena.alloc(sizeof(Data) + len));
-        data->len = static_cast<uint32_t>(len);
-        std::memcpy(data->chars, s, len);
-        data->chars[len] = '\0';
-        // FNV-1a hash
-        uint32_t h = 2166136261u;
-        for (size_t i = 0; i < len; i++) {
-            h ^= static_cast<uint8_t>(s[i]);
-            h *= 16777619u;
-        }
-        data->hash = h;
-    }
+  void luazi_load_bytecode(luazi::VM* vm, const uint8_t* code, size_t len) {
+    vm->load(code, len);
+  }
 
-    LZ_INLINE uint32_t hash() const noexcept { return data->hash; }
-    LZ_INLINE uint32_t length() const noexcept { return data->len; }
-    LZ_INLINE const char* c_str() const noexcept { return data->chars; }
+  double luazi_execute(luazi::VM* vm) {
+    luazi::Value result = vm->execute();
+    return result.is_number() ? result.as_number() : (result.as_bool() ? 1.0 : 0.0);
+  }
 
-    bool operator==(const String& other) const noexcept {
-        if (data->hash != other.data->hash) return false;
-        if (data->len != other.data->len) return false;
-        return std::memcmp(data->chars, other.data->chars, data->len) == 0;
-    }
-};
+  void luazi_set_global(luazi::VM* vm, const char* name, double val) {
+    luazi::String* s = vm->arena.construct<luazi::String>(vm->arena, name, std::strlen(name));
+    vm->globals.set(*s, luazi::Value::from_number(val));
+  }
 
-// ============================================================================
-// HASH TABLE - Robin Hood hashing with linear probing
-// ============================================================================
+  double luazi_get_global(luazi::VM* vm, const char* name) {
+    luazi::String s(vm->arena, name, std::strlen(name));
+    luazi::Value* val = vm->globals.get(s);
+    return val && val->is_number() ? val->as_number() : 0.0;
+  }
 
-template<typename K, typename V>
-class Table {
-    struct Entry {
-        K key;
-        V value;
-        uint8_t dist; // Distance from ideal position
-        bool occupied;
-    };
-
-    Entry* entries;
-    size_t capacity;
-    size_t count;
-    Arena& arena;
-
-    static constexpr size_t INITIAL_CAPACITY = 16;
-    static constexpr double MAX_LOAD = 0.875;
-
-public:
-    explicit Table(Arena& a) : arena(a), capacity(INITIAL_CAPACITY), count(0) {
-        entries = reinterpret_cast<Entry*>(arena.alloc(sizeof(Entry) * capacity));
-        for (size_t i = 0; i < capacity; i++) {
-            entries[i].occupied = false;
-            entries[i].dist = 0;
-        }
-    }
-
-    LZ_INLINE V* get(const K& key) noexcept {
-        size_t idx = hash(key) & (capacity - 1);
-        uint8_t dist = 0;
-
-        while (entries[idx].occupied) {
-            if (entries[idx].dist < dist) return nullptr;
-            if (entries[idx].key == key) return &entries[idx].value;
-            idx = (idx + 1) & (capacity - 1);
-            dist++;
-        }
-        return nullptr;
-    }
-
-    LZ_INLINE void set(const K& key, const V& value) {
-        if (LZ_UNLIKELY(count >= capacity * MAX_LOAD)) {
-            grow();
-        }
-
-        size_t idx = hash(key) & (capacity - 1);
-        uint8_t dist = 0;
-        Entry insert{key, value, dist, true};
-
-        while (entries[idx].occupied) {
-            if (entries[idx].key == key) {
-                entries[idx].value = value;
-                return;
-            }
-            if (entries[idx].dist < dist) {
-                std::swap(insert, entries[idx]);
-                dist = entries[idx].dist;
-            }
-            idx = (idx + 1) & (capacity - 1);
-            dist++;
-        }
-
-        entries[idx] = insert;
-        count++;
-    }
-
-    LZ_INLINE bool remove(const K& key) {
-        size_t idx = hash(key) & (capacity - 1);
-        uint8_t dist = 0;
-
-        while (entries[idx].occupied) {
-            if (entries[idx].dist < dist) return false;
-            if (entries[idx].key == key) {
-                entries[idx].occupied = false;
-                count--;
-                // Backward shift deletion
-                size_t next = (idx + 1) & (capacity - 1);
-                while (entries[next].occupied && entries[next].dist > 0) {
-                    entries[idx] = entries[next];
-                    entries[idx].dist--;
-                    entries[next].occupied = false;
-                    idx = next;
-                    next = (next + 1) & (capacity - 1);
-                }
-                return true;
-            }
-            idx = (idx + 1) & (capacity - 1);
-            dist++;
-        }
-        return false;
-    }
-
-private:
-    void grow() {
-        size_t old_cap = capacity;
-        Entry* old_entries = entries;
-
-        capacity *= 2;
-        entries = reinterpret_cast<Entry*>(arena.alloc(sizeof(Entry) * capacity));
-        for (size_t i = 0; i < capacity; i++) {
-            entries[i].occupied = false;
-        }
-        count = 0;
-
-        for (size_t i = 0; i < old_cap; i++) {
-            if (old_entries[i].occupied) {
-                set(old_entries[i].key, old_entries[i].value);
-            }
-        }
-    }
-
-    static size_t hash(const Value& v) noexcept {
-        return std::hash<uint64_t>{}(v.as_number());
-    }
-
-    static size_t hash(const String& s) noexcept {
-        return s.hash();
-    }
-};
-
-// ============================================================================
-// VIRTUAL MACHINE
-// ============================================================================
-
-enum class OpCode : uint8_t {
-    NOP = 0, LOADK, LOADNIL, LOADBOOL, LOADINT,
-    MOVE, GETGLOBAL, SETGLOBAL, GETUPVAL, SETUPVAL,
-    GETTABLE, SETTABLE, NEWTABLE, SELF,
-    ADD, SUB, MUL, DIV, MOD, POW,
-    UNM, NOT, LEN, CONCAT,
-    JMP, EQ, LT, LE, TEST, TESTSET,
-    CALL, TAILCALL, RETURN,
-    FORLOOP, FORPREP, TFORLOOP,
-    SETLIST, CLOSE, CLOSURE, VARARG,
-    // Luazi extensions
-    TYPECHECK, ASSERT, ASYNC, AWAIT,
-    SIMD_ADD, SIMD_MUL, SIMD_DOT,
-    GUARD, DEFER, MATCH,
-    NUM_OPCODES
-};
-
-struct Instruction {
-    uint32_t raw;
-
-    LZ_INLINE OpCode op() const noexcept { return static_cast<OpCode>(raw & 0x3F); }
-    LZ_INLINE uint8_t a() const noexcept   { return (raw >> 6) & 0xFF; }
-    LZ_INLINE uint16_t b() const noexcept  { return (raw >> 14) & 0x1FF; }
-    LZ_INLINE uint16_t c() const noexcept  { return (raw >> 23) & 0x1FF; }
-    LZ_INLINE int16_t sbx() const noexcept { return static_cast<int16_t>((raw >> 14) & 0x3FFFF); }
-};
-
-class VM {
-    // Stack-based execution
-    static constexpr size_t STACK_SIZE = 65536;
-    static constexpr size_t CONST_POOL = 8192;
-
-    Value stack[STACK_SIZE];
-    Value constants[CONST_POOL];
-    Instruction* code;
-    size_t code_size;
-
-    size_t pc;  // Program counter
-    size_t sp;  // Stack pointer
-    size_t fp;  // Frame pointer
-
-    Arena arena;
-    Table<Value, Value> globals;
-
-public:
-    VM() : pc(0), sp(0), fp(0), code(nullptr), code_size(0), globals(arena) {}
-
-    void load(const uint8_t* bytecode, size_t len);
-    Value execute();
-
-    // JS/WASM export interface
-    extern "C" {
-        static VM* create() { return new VM(); }
-        static void destroy(VM* vm) { delete vm; }
-        static void execute_bytecode(VM* vm, const uint8_t* code, size_t len);
-        static void set_global(VM* vm, const char* name, double val);
-        static double get_global(VM* vm, const char* name);
-        static void collect_garbage(VM* vm);
-    }
-
-private:
-    LZ_INLINE void dispatch();
-    LZ_INLINE Value& reg(uint8_t idx) { return stack[fp + idx]; }
-    LZ_INLINE Value& const_val(uint16_t idx) { return constants[idx]; }
-
-    // Opcode handlers
-    void op_loadk(const Instruction& i);
-    void op_add(const Instruction& i);
-    void op_sub(const Instruction& i);
-    void op_mul(const Instruction& i);
-    void op_div(const Instruction& i);
-    void op_jmp(const Instruction& i);
-    void op_eq(const Instruction& i);
-    void op_lt(const Instruction& i);
-    void op_call(const Instruction& i);
-    void op_return(const Instruction& i);
-};
+  void luazi_collect_garbage(luazi::VM* vm) {
+    // Arena allocator - reset on full GC
+    vm->arena.reset();
+  }
+}
 
 } // namespace luazi
-
-#endif // LUAZI_VM_H
