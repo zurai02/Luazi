@@ -1,612 +1,915 @@
-;; Luazi Core Runtime in WAT
-;; Hand-optimized WebAssembly for maximum performance
-;; Compile: wat2wasm core.wat -o core.wasm
-
 (module
-  ;; Memory: 1 page = 64KB, growable
+  ;; Memory: 1 page (64KB) initial, 8 pages max
   (memory (export "memory") 1 8)
-
-  ;; Global state
-  (global $stack_ptr (mut i32) (i32.const 1024))    ;; Stack starts at 1KB
-  (global $heap_ptr (mut i32) (i32.const 65536))     ;; Heap starts at 64KB
-  (global $pc (mut i32) (i32.const 0))               ;; Program counter
-  (global $fp (mut i32) (i32.const 1024))            ;; Frame pointer
-
-  ;; Constants
-  (global $STACK_SIZE i32 (i32.const 65536))         ;; 64KB stack
-  (global $STACK_BASE i32 (i32.const 1024))
-  (global $NAN_MASK i64 (i64.const 0x7FF8000000000000))
-  (global $TAG_NIL i64 (i64.const 0x7FF8000000000001))
-  (global $TAG_TRUE i64 (i64.const 0x7FF8000000000003))
+  
+  ;; Globals
+  (global $stack_ptr (mut i32) (i32.const 0))
+  (global $frame_ptr (mut i32) (i32.const 0))
+  (global $pc (mut i32) (i32.const 0))
+  (global $free_ptr (mut i32) (i32.const 1024))
+  (global $const_pool (mut i32) (i32.const 2048))
+  
+  ;; Type tags for NaN boxing
+  (global $TAG_NIL i64 (i64.const 0x7FF8000000000000))
+  (global $TAG_TRUE i64 (i64.const 0x7FF8000000000001))
   (global $TAG_FALSE i64 (i64.const 0x7FF8000000000002))
-
-  ;; ==========================================================================
-  ;; MEMORY MANAGEMENT
-  ;; ==========================================================================
-
-  ;; Bump allocator - O(1) allocation
+  (global $TAG_STRING i64 (i64.const 0x7FF8000000000003))
+  (global $TAG_TABLE i64 (i64.const 0x7FF8000000000004))
+  (global $TAG_FUNCTION i64 (i64.const 0x7FF8000000000005))
+  
+  ;; ============================================================================
+  ;; IMPORTS
+  ;; ============================================================================
+  (import "env" "print" (func $print (param i32 i32)))
+  (import "env" "now" (func $now (result f64)))
+  (import "env" "sin" (func $sin (param f64) (result f64)))
+  (import "env" "cos" (func $cos (param f64) (result f64)))
+  (import "env" "sqrt" (func $sqrt (param f64) (result f64)))
+  (import "env" "pow" (func $pow (param f64 f64) (result f64)))
+  
+  ;; ============================================================================
+  ;; HELPER FUNCTIONS
+  ;; ============================================================================
+  
+  ;; Allocate memory from bump allocator
   (func $alloc (param $size i32) (result i32)
     (local $ptr i32)
-    (local.set $ptr (global.get $heap_ptr))
-    ;; Align to 8 bytes
-    (local.set $size
-      (i32.and
-        (i32.add (local.get $size) (i32.const 7))
-        (i32.const -8)))
-    (global.set $heap_ptr
-      (i32.add (global.get $heap_ptr) (local.get $size)))
+    (local.set $ptr (global.get $free_ptr))
+    (global.set $free_ptr (i32.add (local.get $ptr) (local.get $size)))
     (local.get $ptr)
   )
-
-  ;; Reset heap (arena reset)
-  (func $reset_heap
-    (global.set $heap_ptr (i32.const 65536))
-  )
-
-  ;; ==========================================================================
-  ;; VALUE OPERATIONS (NaN Boxing)
-  ;; ==========================================================================
-
-  ;; Create nil value
-  (func $val_nil (result i64)
-    (global.get $TAG_NIL)
-  )
-
-  ;; Create boolean value
-  (func $val_bool (param $b i32) (result i64)
-    (select
-      (global.get $TAG_TRUE)
-      (global.get $TAG_FALSE)
-      (local.get $b))
-  )
-
-  ;; Create number value (just the bits)
-  (func $val_number (param $n f64) (result i64)
-    (i64.reinterpret_f64 (local.get $n))
-  )
-
-  ;; Extract number from value
-  (func $as_number (param $v i64) (result f64)
-    (f64.reinterpret_i64 (local.get $v))
-  )
-
-  ;; Check if value is nil
-  (func $is_nil (param $v i64) (result i32)
-    (i64.eq (local.get $v) (global.get $TAG_NIL))
-  )
-
-  ;; Check if value is a number (not NaN-boxed)
-  (func $is_number (param $v i64) (result i32)
-    (i32.and
-      (i64.eq
-        (i64.and (local.get $v) (global.get $NAN_MASK))
-        (global.get $NAN_MASK))
-      (i32.const 0))  ;; If it matches NaN mask exactly, it's not a number
-    ;; Actually: if top bits are not all 1s (0x7FF), it's a number
-    (i32.eqz
-      (i64.eq
-        (i64.and (local.get $v) (i64.const 0x7FF0000000000000))
-        (i64.const 0x7FF0000000000000)))
-  )
-
-  ;; Check if value is truthy
-  (func $is_truthy (param $v i64) (result i32)
-    (if (call $is_nil (local.get $v))
-      (then (return (i32.const 0))))
-    (if (i64.eq (local.get $v) (global.get $TAG_FALSE))
-      (then (return (i32.const 0))))
-    (if (call $is_number (local.get $v))
-      (then
-        (return
-          (f64.ne
-            (call $as_number (local.get $v))
-            (f64.const 0)))))
-    (i32.const 1)
-  )
-
-  ;; ==========================================================================
-  ;; STACK OPERATIONS
-  ;; ==========================================================================
-
-  ;; Push value onto stack
-  (func $push (param $v i64)
-    (i64.store
-      (global.get $stack_ptr)
-      (local.get $v))
-    (global.set $stack_ptr
-      (i32.add (global.get $stack_ptr) (i32.const 8)))
-  )
-
-  ;; Pop value from stack
-  (func $pop (result i64)
-    (global.set $stack_ptr
-      (i32.sub (global.get $stack_ptr) (i32.const 8)))
-    (i64.load (global.get $stack_ptr))
-  )
-
-  ;; Get value at stack index (relative to frame pointer)
+  
+  ;; Get register value (8-byte aligned)
   (func $get_reg (param $idx i32) (result i64)
     (i64.load
       (i32.add
-        (global.get $fp)
-        (i32.shl (local.get $idx) (i32.const 3))))
+        (global.get $frame_ptr)
+        (i32.shl (local.get $idx) (i32.const 3))
+      )
+    )
   )
-
-  ;; Set value at stack index
-  (func $set_reg (param $idx i32) (param $v i64)
+  
+  ;; Set register value
+  (func $set_reg (param $idx i32) (param $val i64)
     (i64.store
       (i32.add
-        (global.get $fp)
-        (i32.shl (local.get $idx) (i32.const 3)))
-      (local.get $v))
+        (global.get $frame_ptr)
+        (i32.shl (local.get $idx) (i32.const 3))
+      )
+      (local.get $val)
+    )
   )
-
-  ;; ==========================================================================
-  ;; ARITHMETIC OPERATIONS
-  ;; ==========================================================================
-
-  ;; Add two numbers
-  (func $add (param $a i64) (param $b i64) (result i64)
-    (call $val_number
-      (f64.add
-        (call $as_number (local.get $a))
-        (call $as_number (local.get $b))))
+  
+  ;; Get constant from pool
+  (func $get_const (param $idx i32) (result i64)
+    (i64.load
+      (i32.add
+        (global.get $const_pool)
+        (i32.shl (local.get $idx) (i32.const 3))
+      )
+    )
   )
-
-  ;; Subtract
-  (func $sub (param $a i64) (param $b i64) (result i64)
-    (call $val_number
-      (f64.sub
-        (call $as_number (local.get $a))
-        (call $as_number (local.get $b))))
+  
+  ;; Check if value is a number (not NaN-boxed)
+  (func $is_number (param $val i64) (result i32)
+    (i64.lt_u
+      (i64.shr_u (local.get $val) (i64.const 52))
+      (i64.const 0x7FF)
+    )
   )
-
-  ;; Multiply
-  (func $mul (param $a i64) (param $b i64) (result i64)
-    (call $val_number
-      (f64.mul
-        (call $as_number (local.get $a))
-        (call $as_number (local.get $b))))
+  
+  ;; Check if value is nil
+  (func $is_nil (param $val i64) (result i32)
+    (i64.eq (local.get $val) (global.get $TAG_NIL))
   )
-
-  ;; Divide
-  (func $div (param $a i64) (param $b i64) (result i64)
-    (call $val_number
-      (f64.div
-        (call $as_number (local.get $a))
-        (call $as_number (local.get $b))))
+  
+  ;; Check if value is truthy
+  (func $is_truthy (param $val i64) (result i32)
+    (if (call $is_nil (local.get $val))
+      (then (return (i32.const 0)))
+    )
+    (if (i64.eq (local.get $val) (global.get $TAG_FALSE))
+      (then (return (i32.const 0)))
+    )
+    (if (call $is_number (local.get $val))
+      (then
+        (return
+          (f64.ne
+            (f64.reinterpret_i64 (local.get $val))
+            (f64.const 0)
+          )
+        )
+      )
+    )
+    (i32.const 1)
   )
-
-  ;; Negate
-  (func $neg (param $a i64) (result i64)
-    (call $val_number
-      (f64.neg (call $as_number (local.get $a))))
+  
+  ;; Convert value to number
+  (func $to_number (param $val i64) (result f64)
+    (if (call $is_number (local.get $val))
+      (then (return (f64.reinterpret_i64 (local.get $val))))
+    )
+    (f64.const 0)
   )
-
-  ;; ==========================================================================
-  ;; COMPARISON OPERATIONS
-  ;; ==========================================================================
-
-  (func $eq (param $a i64) (param $b i64) (result i32)
-    (i64.eq (local.get $a) (local.get $b))
+  
+  ;; Convert value to boolean
+  (func $to_bool (param $val i64) (result i32)
+    (call $is_truthy (local.get $val))
   )
-
-  (func $lt (param $a i64) (param $b i64) (result i32)
-    (f64.lt
-      (call $as_number (local.get $a))
-      (call $as_number (local.get $b)))
+  
+  ;; Create number value
+  (func $make_num (param $val f64) (result i64)
+    (i64.reinterpret_f64 (local.get $val))
   )
-
-  (func $le (param $a i64) (param $b i64) (result i32)
-    (f64.le
-      (call $as_number (local.get $a))
-      (call $as_number (local.get $b)))
+  
+  ;; Create nil value
+  (func $make_nil (result i64)
+    (global.get $TAG_NIL)
   )
-
-  ;; ==========================================================================
-  ;; SIMD OPERATIONS (WASM SIMD128)
-  ;; ==========================================================================
-
-  ;; SIMD add 4x f64
-  (func $simd_add4
-    (param $dst i32) (param $a i32) (param $b i32)
-    (v128.store
-      (local.get $dst)
-      (f64x2.add
-        (v128.load (local.get $a))
-        (v128.load (local.get $b))))
-    (v128.store
-      (i32.add (local.get $dst) (i32.const 16))
-      (f64x2.add
-        (v128.load (i32.add (local.get $a) (i32.const 16)))
-        (v128.load (i32.add (local.get $b) (i32.const 16)))))
+  
+  ;; Create boolean value
+  (func $make_bool (param $val i32) (result i64)
+    (if (local.get $val)
+      (then (return (global.get $TAG_TRUE)))
+    )
+    (global.get $TAG_FALSE)
   )
-
-  ;; SIMD multiply 4x f64
-  (func $simd_mul4
-    (param $dst i32) (param $a i32) (param $b i32)
-    (v128.store
-      (local.get $dst)
-      (f64x2.mul
-        (v128.load (local.get $a))
-        (v128.load (local.get $b))))
-    (v128.store
-      (i32.add (local.get $dst) (i32.const 16))
-      (f64x2.mul
-        (v128.load (i32.add (local.get $a) (i32.const 16)))
-        (v128.load (i32.add (local.get $b) (i32.const 16)))))
+  
+  ;; ============================================================================
+  ;; TABLE OPERATIONS
+  ;; ============================================================================
+  
+  ;; Create new table
+  (func $new_table (result i64)
+    (local $ptr i32)
+    (local.set $ptr (call $alloc (i32.const 16)))
+    (i32.store (local.get $ptr) (i32.const 0))
+    (i32.store (i32.add (local.get $ptr) (i32.const 4)) (i32.const 8))
+    (i32.store (i32.add (local.get $ptr) (i32.const 8)) (i32.const 0))
+    (i32.store (i32.add (local.get $ptr) (i32.const 12)) (i32.const 0))
+    (i64.or
+      (global.get $TAG_TABLE)
+      (i64.extend_i32_u (local.get $ptr))
+    )
   )
-
-  ;; SIMD dot product (4x f64)
-  (func $simd_dot4 (param $a i32) (param $b i32) (result f64)
-    (local $sum f64)
-    (local.set $sum
-      (f64.add
-        (f64x2.extract_lane 0
-          (f64x2.mul
-            (v128.load (local.get $a))
-            (v128.load (local.get $b))))
-        (f64x2.extract_lane 1
-          (f64x2.mul
-            (v128.load (local.get $a))
-            (v128.load (local.get $b))))))
-    (local.set $sum
-      (f64.add
-        (local.get $sum)
-        (f64.add
-          (f64x2.extract_lane 0
-            (f64x2.mul
-              (v128.load (i32.add (local.get $a) (i32.const 16)))
-              (v128.load (i32.add (local.get $b) (i32.const 16)))))
-          (f64x2.extract_lane 1
-            (f64x2.mul
-              (v128.load (i32.add (local.get $a) (i32.const 16)))
-              (v128.load (i32.add (local.get $b) (i32.const 16))))))))
-    (local.get $sum)
+  
+  ;; Get table entry
+  (func $table_get (param $tbl i64) (param $key i64) (result i64)
+    (local $ptr i32)
+    (local $count i32)
+    (local $data i32)
+    (local $i i32)
+    (local.set $ptr (i32.wrap_i64 (i64.and (local.get $tbl) (i64.const 0xFFFFFFFF))))
+    (local.set $count (i32.load (local.get $ptr)))
+    (local.set $data (i32.load (i32.add (local.get $ptr) (i32.const 8))))
+    (if (i32.eqz (local.get $data))
+      (then (return (call $make_nil)))
+    )
+    (local.set $i (i32.const 0))
+    (block $done
+      (loop $search
+        (br_if $done (i32.ge_u (local.get $i) (local.get $count)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $search)
+      )
+    )
+    (call $make_nil)
   )
-
-  ;; ==========================================================================
-  ;; BYTECODE DISPATCHER
-  ;; ==========================================================================
-
-  ;; Execute bytecode from memory
-  ;; bytecode format at offset 0:
-  ;;   u32 magic (0x4C5A494D)
-  ;;   u8  version
-  ;;   u8  flags
-  ;;   u16 const_count
-  ;;   constants[]
-  ;;   instructions[]
-
-  (func $execute (param $code_offset i32) (param $code_len i32) (result f64)
-    (local $inst i32)
+  
+  ;; Set table entry
+  (func $table_set (param $tbl i64) (param $key i64) (param $val i64)
+  )
+  
+  ;; ============================================================================
+  ;; STRING OPERATIONS
+  ;; ============================================================================
+  
+  ;; Create string from memory
+  (func $make_string (param $ptr i32) (param $len i32) (result i64)
+    (local $str_ptr i32)
+    (local.set $str_ptr (call $alloc (i32.add (local.get $len) (i32.const 8))))
+    (i32.store (local.get $str_ptr) (local.get $len))
+    (memory.copy
+      (i32.add (local.get $str_ptr) (i32.const 4))
+      (local.get $ptr)
+      (local.get $len)
+    )
+    (i64.or
+      (global.get $TAG_STRING)
+      (i64.extend_i32_u (local.get $str_ptr))
+    )
+  )
+  
+  ;; Get string length
+  (func $string_len (param $str i64) (result i32)
+    (local $ptr i32)
+    (local.set $ptr (i32.wrap_i64 (i64.and (local.get $str) (i64.const 0xFFFFFFFF))))
+    (i32.load (local.get $ptr))
+  )
+  
+  ;; Concatenate two strings
+  (func $string_concat (param $a i64) (param $b i64) (result i64)
+    (local $a_ptr i32)
+    (local $b_ptr i32)
+    (local $a_len i32)
+    (local $b_len i32)
+    (local $result i32)
+    (local.set $a_ptr (i32.wrap_i64 (i64.and (local.get $a) (i64.const 0xFFFFFFFF))))
+    (local.set $b_ptr (i32.wrap_i64 (i64.and (local.get $b) (i64.const 0xFFFFFFFF))))
+    (local.set $a_len (i32.load (local.get $a_ptr)))
+    (local.set $b_len (i32.load (local.get $b_ptr)))
+    (local.set $result (call $alloc (i32.add (i32.add (local.get $a_len) (local.get $b_len)) (i32.const 8))))
+    (i32.store (local.get $result) (i32.add (local.get $a_len) (local.get $b_len)))
+    (memory.copy
+      (i32.add (local.get $result) (i32.const 4))
+      (i32.add (local.get $a_ptr) (i32.const 4))
+      (local.get $a_len)
+    )
+    (memory.copy
+      (i32.add (i32.add (local.get $result) (i32.const 4)) (local.get $a_len))
+      (i32.add (local.get $b_ptr) (i32.const 4))
+      (local.get $b_len)
+    )
+    (i64.or
+      (global.get $TAG_STRING)
+      (i64.extend_i32_u (local.get $result))
+    )
+  )
+  
+  ;; ============================================================================
+  ;; MAIN DISPATCH LOOP
+  ;; ============================================================================
+  
+  (func $execute (param $bytecode_ptr i32) (param $bytecode_len i32) (result f64)
     (local $opcode i32)
     (local $a i32)
     (local $b i32)
     (local $c i32)
     (local $sbx i32)
-
-    ;; Reset state
-    (global.set $pc (i32.const 0))
-    (global.set $fp (global.get $STACK_BASE))
-    (global.set $stack_ptr (global.get $STACK_BASE))
-
-    ;; Skip header (8 bytes)
-    (local.set $pc (i32.const 8))
-
-    ;; Main execution loop
+    (local $inst i32)
+    (local $left i64)
+    (local $right i64)
+    (local $result i64)
+    (local $tbl i64)
+    (local $key i64)
+    (local $val i64)
+    (local $tmp f64)
+    
+    (global.set $pc (local.get $bytecode_ptr))
+    (global.set $frame_ptr (i32.const 0))
+    (global.set $stack_ptr (i32.const 0))
+    
     (block $done
-      (loop $loop
-        ;; Check bounds
-        (br_if $done
-          (i32.ge_u
-            (local.get $pc)
-            (local.get $code_len)))
-
-        ;; Fetch instruction (32-bit)
-        (local.set $inst
-          (i32.load
-            (i32.add (local.get $code_offset) (local.get $pc))))
-        (global.set $pc
-          (i32.add (global.get $pc) (i32.const 4)))
-
-        ;; Decode
+      (loop $dispatch
+        (br_if $done (i32.ge_u (global.get $pc) (i32.add (local.get $bytecode_ptr) (local.get $bytecode_len))))
+        
+        (local.set $inst (i32.load (global.get $pc)))
+        (global.set $pc (i32.add (global.get $pc) (i32.const 4)))
+        
         (local.set $opcode (i32.and (local.get $inst) (i32.const 0x3F)))
-        (local.set $a
-          (i32.and
-            (i32.shr_u (local.get $inst) (i32.const 6))
-            (i32.const 0xFF)))
-        (local.set $b
-          (i32.and
-            (i32.shr_u (local.get $inst) (i32.const 14))
-            (i32.const 0x1FF)))
-        (local.set $c
-          (i32.and
-            (i32.shr_u (local.get $inst) (i32.const 23))
-            (i32.const 0x1FF)))
-        (local.set $sbx
-          (i32.shr_s
-            (i32.shl (local.get $inst) (i32.const 12))
-            (i32.const 14)))
-
-        ;; Dispatch
-        (block $dispatch
-          (block $op_return
-            (block $op_call
-              (block $op_forloop
-                (block $op_forprep
-                  (block $op_closure
-                    (block $op_setlist
-                      (block $op_tforloop
-                        (block $op_close
-                          (block $op_vararg
-                            (block $op_settable
-                              (block $op_gettable
-                                (block $op_newtable
-                                  (block $op_self
-                                    (block $op_concat
-                                      (block $op_len
-                                        (block $op_not
-                                          (block $op_unm
-                                            (block $op_pow
-                                              (block $op_mod
-                                                (block $op_div
-                                                  (block $op_mul
-                                                    (block $op_sub
-                                                      (block $op_add
-                                                        (block $op_testset
-                                                          (block $op_test
-                                                            (block $op_le
-                                                              (block $op_lt
-                                                                (block $op_eq
-                                                                  (block $op_jmp
-                                                                    (block $op_setupval
-                                                                      (block $op_getupval
-                                                                        (block $op_setglobal
-                                                                          (block $op_getglobal
-                                                                            (block $op_move
-                                                                              (block $op_loadint
-                                                                                (block $op_loadbool
-                                                                                  (block $op_loadnil
-                                                                                    (block $op_loadk
-                                                                                      (block $op_nop
-                                                                                        ;; NOP = 0
-                                                                                        (br $dispatch)
-                                                                                      )
-                                                                                      ;; LOADK = 1
-                                                                                      (call $set_reg
-                                                                                        (local.get $a)
-                                                                                        (i64.load
-                                                                                          (i32.add
-                                                                                            (i32.const 2048) ;; const pool offset
-                                                                                            (i32.shl (local.get $b) (i32.const 3)))))
-                                                                                      (br $dispatch)
-                                                                                    )
-                                                                                    ;; LOADNIL = 2
-                                                                                    (call $set_reg
-                                                                                      (local.get $a)
-                                                                                      (call $val_nil))
-                                                                                    (br $dispatch)
-                                                                                  )
-                                                                                  ;; LOADBOOL = 3
-                                                                                  (call $set_reg
-                                                                                    (local.get $a)
-                                                                                    (call $val_bool (local.get $b)))
-                                                                                  (br $dispatch)
-                                                                                )
-                                                                                ;; LOADINT = 4
-                                                                                (call $set_reg
-                                                                                  (local.get $a)
-                                                                                  (call $val_number
-                                                                                    (f64.convert_i32_s (local.get $sbx))))
-                                                                                (br $dispatch)
-                                                                              )
-                                                                              ;; MOVE = 5
-                                                                              (call $set_reg
-                                                                                (local.get $a)
-                                                                                (call $get_reg (local.get $b)))
-                                                                              (br $dispatch)
-                                                                            )
-                                                                            ;; GETGLOBAL = 6
-                                                                            ;; Simplified: load from global table
-                                                                            (br $dispatch)
-                                                                          )
-                                                                          ;; SETGLOBAL = 7
-                                                                          (br $dispatch)
-                                                                        )
-                                                                        ;; GETUPVAL = 8
-                                                                        (br $dispatch)
-                                                                      )
-                                                                      ;; SETUPVAL = 9
-                                                                      (br $dispatch)
-                                                                    )
-                                                                    ;; GETTABLE = 10
-                                                                    (br $dispatch)
-                                                                  )
-                                                                  ;; SETTABLE = 11
-                                                                  (br $dispatch)
-                                                                )
-                                                                ;; NEWTABLE = 12
-                                                                (br $dispatch)
-                                                              )
-                                                              ;; SELF = 13
-                                                              (br $dispatch)
-                                                            )
-                                                            ;; ADD = 14
-                                                            (call $set_reg
-                                                              (local.get $a)
-                                                              (call $add
-                                                                (call $get_reg (local.get $b))
-                                                                (call $get_reg (local.get $c))))
-                                                            (br $dispatch)
-                                                          )
-                                                          ;; SUB = 15
-                                                          (call $set_reg
-                                                            (local.get $a)
-                                                            (call $sub
-                                                              (call $get_reg (local.get $b))
-                                                              (call $get_reg (local.get $c))))
-                                                          (br $dispatch)
-                                                        )
-                                                        ;; MUL = 16
-                                                        (call $set_reg
-                                                          (local.get $a)
-                                                          (call $mul
-                                                            (call $get_reg (local.get $b))
-                                                            (call $get_reg (local.get $c))))
-                                                        (br $dispatch)
-                                                      )
-                                                      ;; DIV = 17
-                                                      (call $set_reg
-                                                        (local.get $a)
-                                                        (call $div
-                                                          (call $get_reg (local.get $b))
-                                                          (call $get_reg (local.get $c))))
-                                                      (br $dispatch)
-                                                    )
-                                                    ;; MOD = 18
-                                                    (br $dispatch)
-                                                  )
-                                                  ;; POW = 19
-                                                  (br $dispatch)
-                                                )
-                                                ;; UNM = 20
-                                                (call $set_reg
-                                                  (local.get $a)
-                                                  (call $neg (call $get_reg (local.get $b))))
-                                                (br $dispatch)
-                                              )
-                                              ;; NOT = 21
-                                              (call $set_reg
-                                                (local.get $a)
-                                                (call $val_bool
-                                                  (i32.eqz (call $is_truthy (call $get_reg (local.get $b))))))
-                                              (br $dispatch)
-                                            )
-                                            ;; LEN = 22
-                                            (br $dispatch)
-                                          )
-                                          ;; CONCAT = 23
-                                          (br $dispatch)
-                                        )
-                                        ;; JMP = 24
-                                        (global.set $pc
-                                          (i32.add
-                                            (global.get $pc)
-                                            (i32.shl (local.get $sbx) (i32.const 2))))
-                                        (br $dispatch)
-                                      )
-                                      ;; EQ = 25
-                                      (if
-                                        (i32.ne
-                                          (call $eq
-                                            (call $get_reg (local.get $b))
-                                            (call $get_reg (local.get $c)))
-                                          (local.get $a))
-                                        (then
-                                          (global.set $pc
-                                            (i32.add (global.get $pc) (i32.const 4)))))
-                                      (br $dispatch)
-                                    )
-                                    ;; LT = 26
-                                    (if
-                                      (i32.ne
-                                        (call $lt
-                                          (call $get_reg (local.get $b))
-                                          (call $get_reg (local.get $c)))
-                                        (local.get $a))
-                                      (then
-                                        (global.set $pc
-                                          (i32.add (global.get $pc) (i32.const 4)))))
-                                    (br $dispatch)
-                                  )
-                                  ;; LE = 27
-                                  (if
-                                    (i32.ne
-                                      (call $le
-                                        (call $get_reg (local.get $b))
-                                        (call $get_reg (local.get $c)))
-                                      (local.get $a))
-                                    (then
-                                      (global.set $pc
-                                        (i32.add (global.get $pc) (i32.const 4)))))
-                                  (br $dispatch)
-                                )
-                                ;; TEST = 28
-                                (if
-                                  (i32.ne
-                                    (call $is_truthy (call $get_reg (local.get $a)))
-                                    (local.get $c))
-                                  (then
-                                    (global.set $pc
-                                      (i32.add (global.get $pc) (i32.const 4)))))
-                                (br $dispatch)
-                              )
-                              ;; TESTSET = 29
-                              (br $dispatch)
-                            )
-                            ;; CALL = 30
-                            (br $dispatch)
-                          )
-                          ;; TAILCALL = 31
-                          (br $dispatch)
-                        )
-                        ;; RETURN = 32
-                        (return
-                          (call $as_number (call $get_reg (local.get $a))))
-                      )
-                      ;; FORLOOP = 33
-                      (br $dispatch)
-                    )
-                    ;; FORPREP = 34
-                    (br $dispatch)
-                  )
-                  ;; TFORLOOP = 35
-                  (br $dispatch)
-                )
-                ;; SETLIST = 36
-                (br $dispatch)
-              )
-              ;; CLOSE = 37
-              (br $dispatch)
-            )
-            ;; CLOSURE = 38
-            (br $dispatch)
+        (local.set $a (i32.and (i32.shr_u (local.get $inst) (i32.const 6)) (i32.const 0xFF)))
+        (local.set $b (i32.and (i32.shr_u (local.get $inst) (i32.const 14)) (i32.const 0x1FF)))
+        (local.set $c (i32.and (i32.shr_u (local.get $inst) (i32.const 23)) (i32.const 0x1FF)))
+        (local.set $sbx (i32.shr_s (i32.shl (local.get $inst) (i32.const 8)) (i32.const 8)))
+        
+        (block $dispatch_end
+          
+          ;; NOP (0)
+          (if (i32.eq (local.get $opcode) (i32.const 0))
+            (then (br $dispatch_end))
           )
-          ;; VARARG = 39
-          (br $dispatch)
-        )
-
-        ;; Continue loop
-        (br $loop)
+          
+          ;; LOADK (1) - A Bx
+          (if (i32.eq (local.get $opcode) (i32.const 1))
+            (then
+              (call $set_reg (local.get $a) (call $get_const (local.get $b)))
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; LOADNIL (2) - A
+          (if (i32.eq (local.get $opcode) (i32.const 2))
+            (then
+              (call $set_reg (local.get $a) (call $make_nil))
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; LOADBOOL (3) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 3))
+            (then
+              (call $set_reg (local.get $a) (call $make_bool (i32.ne (local.get $b) (i32.const 0))))
+              (if (local.get $c)
+                (then (global.set $pc (i32.add (global.get $pc) (i32.const 4))))
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; LOADINT (4) - A sBx
+          (if (i32.eq (local.get $opcode) (i32.const 4))
+            (then
+              (call $set_reg (local.get $a) (call $make_num (f64.convert_i32_s (local.get $sbx))))
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; MOVE (5) - A B
+          (if (i32.eq (local.get $opcode) (i32.const 5))
+            (then
+              (call $set_reg (local.get $a) (call $get_reg (local.get $b)))
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; GETGLOBAL (6) - A Bx
+          (if (i32.eq (local.get $opcode) (i32.const 6))
+            (then
+              (call $set_reg (local.get $a) (call $get_const (local.get $b)))
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; SETGLOBAL (7) - A Bx
+          (if (i32.eq (local.get $opcode) (i32.const 7))
+            (then (br $dispatch_end))
+          )
+          
+          ;; GETUPVAL (8) - A B
+          (if (i32.eq (local.get $opcode) (i32.const 8))
+            (then
+              (call $set_reg (local.get $a) (call $make_nil))
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; SETUPVAL (9) - A B
+          (if (i32.eq (local.get $opcode) (i32.const 9))
+            (then (br $dispatch_end))
+          )
+          
+          ;; GETTABLE (10) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 10))
+            (then
+              (local.set $tbl (call $get_reg (local.get $b)))
+              (local.set $key
+                (if (result i64) (i32.ge_u (local.get $c) (i32.const 256))
+                  (then (call $get_const (i32.sub (local.get $c) (i32.const 256))))
+                  (else (call $get_reg (local.get $c)))
+                )
+              )
+              (if (i64.ge_u (local.get $tbl) (global.get $TAG_TABLE))
+                (then
+                  (call $set_reg (local.get $a) (call $table_get (local.get $tbl) (local.get $key)))
+                )
+                (else
+                  (call $set_reg (local.get $a) (call $make_nil))
+                )
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; SETTABLE (11) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 11))
+            (then
+              (local.set $tbl (call $get_reg (local.get $a)))
+              (local.set $key
+                (if (result i64) (i32.ge_u (local.get $b) (i32.const 256))
+                  (then (call $get_const (i32.sub (local.get $b) (i32.const 256))))
+                  (else (call $get_reg (local.get $b)))
+                )
+              )
+              (local.set $val
+                (if (result i64) (i32.ge_u (local.get $c) (i32.const 256))
+                  (then (call $get_const (i32.sub (local.get $c) (i32.const 256))))
+                  (else (call $get_reg (local.get $c)))
+                )
+              )
+              (call $table_set (local.get $tbl) (local.get $key) (local.get $val))
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; NEWTABLE (12) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 12))
+            (then
+              (call $set_reg (local.get $a) (call $new_table))
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; SELF (13) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 13))
+            (then
+              (local.set $tbl (call $get_reg (local.get $b)))
+              (call $set_reg (i32.add (local.get $a) (i32.const 1)) (local.get $tbl))
+              (local.set $key
+                (if (result i64) (i32.ge_u (local.get $c) (i32.const 256))
+                  (then (call $get_const (i32.sub (local.get $c) (i32.const 256))))
+                  (else (call $get_reg (local.get $c)))
+                )
+              )
+              (call $set_reg (local.get $a) (call $table_get (local.get $tbl) (local.get $key)))
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; ADD (14) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 14))
+            (then
+              (call $set_reg
+                (local.get $a)
+                (call $make_num
+                  (f64.add
+                    (call $to_number (call $get_reg (local.get $b)))
+                    (call $to_number (call $get_reg (local.get $c)))
+                  )
+                )
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; SUB (15) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 15))
+            (then
+              (call $set_reg
+                (local.get $a)
+                (call $make_num
+                  (f64.sub
+                    (call $to_number (call $get_reg (local.get $b)))
+                    (call $to_number (call $get_reg (local.get $c)))
+                  )
+                )
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; MUL (16) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 16))
+            (then
+              (call $set_reg
+                (local.get $a)
+                (call $make_num
+                  (f64.mul
+                    (call $to_number (call $get_reg (local.get $b)))
+                    (call $to_number (call $get_reg (local.get $c)))
+                  )
+                )
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; DIV (17) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 17))
+            (then
+              (local.set $tmp (call $to_number (call $get_reg (local.get $c))))
+              (if (f64.eq (local.get $tmp) (f64.const 0))
+                (then
+                  (call $set_reg (local.get $a) (call $make_num (f64.const 0x7FF0000000000000)))
+                )
+                (else
+                  (call $set_reg
+                    (local.get $a)
+                    (call $make_num
+                      (f64.div
+                        (call $to_number (call $get_reg (local.get $b)))
+                        (local.get $tmp)
+                      )
+                    )
+                  )
+                )
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; MOD (18) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 18))
+            (then
+              (call $set_reg
+                (local.get $a)
+                (call $make_num
+                  (f64.rem
+                    (call $to_number (call $get_reg (local.get $b)))
+                    (call $to_number (call $get_reg (local.get $c)))
+                  )
+                )
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; POW (19) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 19))
+            (then
+              (call $set_reg
+                (local.get $a)
+                (call $make_num
+                  (call $pow
+                    (call $to_number (call $get_reg (local.get $b)))
+                    (call $to_number (call $get_reg (local.get $c)))
+                  )
+                )
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; UNM (20) - A B
+          (if (i32.eq (local.get $opcode) (i32.const 20))
+            (then
+              (call $set_reg
+                (local.get $a)
+                (call $make_num (f64.neg (call $to_number (call $get_reg (local.get $b)))))
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; NOT (21) - A B
+          (if (i32.eq (local.get $opcode) (i32.const 21))
+            (then
+              (call $set_reg
+                (local.get $a)
+                (call $make_bool (i32.eqz (call $is_truthy (call $get_reg (local.get $b)))))
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; LEN (22) - A B
+          (if (i32.eq (local.get $opcode) (i32.const 22))
+            (then
+              (local.set $val (call $get_reg (local.get $b)))
+              (if (call $is_number (local.get $val))
+                (then
+                  (call $set_reg (local.get $a) (call $make_num (f64.abs (call $to_number (local.get $val)))))
+                )
+                (else
+                  (call $set_reg (local.get $a) (call $make_num (f64.const 0)))
+                )
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; CONCAT (23) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 23))
+            (then
+              (call $set_reg
+                (local.get $a)
+                (call $string_concat (call $get_reg (local.get $b)) (call $get_reg (local.get $c)))
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; JMP (24) - sBx
+          (if (i32.eq (local.get $opcode) (i32.const 24))
+            (then
+              (global.set $pc (i32.add (global.get $pc) (i32.mul (local.get $sbx) (i32.const 4))))
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; EQ (25) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 25))
+            (then
+              (local.set $left (call $get_reg (local.get $b)))
+              (local.set $right (call $get_reg (local.get $c)))
+              (local.set $result
+                (if (result i64) (i64.eq (local.get $left) (local.get $right))
+                  (then (i64.const 1))
+                  (else (i64.const 0))
+                )
+              )
+              (if (i32.ne (i32.wrap_i64 (local.get $result)) (local.get $a))
+                (then (global.set $pc (i32.add (global.get $pc) (i32.const 4))))
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; LT (26) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 26))
+            (then
+              (local.set $tmp
+                (f64.lt
+                  (call $to_number (call $get_reg (local.get $b)))
+                  (call $to_number (call $get_reg (local.get $c)))
+                )
+              )
+              (if (i32.ne (i32.wrap_i64 (call $make_bool (i32.wrap_i64 (local.get $tmp)))) (local.get $a))
+                (then (global.set $pc (i32.add (global.get $pc) (i32.const 4))))
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; LE (27) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 27))
+            (then
+              (local.set $tmp
+                (f64.le
+                  (call $to_number (call $get_reg (local.get $b)))
+                  (call $to_number (call $get_reg (local.get $c)))
+                )
+              )
+              (if (i32.ne (i32.wrap_i64 (call $make_bool (i32.wrap_i64 (local.get $tmp)))) (local.get $a))
+                (then (global.set $pc (i32.add (global.get $pc) (i32.const 4))))
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; TEST (28) - A C
+          (if (i32.eq (local.get $opcode) (i32.const 28))
+            (then
+              (if (i32.ne (call $is_truthy (call $get_reg (local.get $a))) (local.get $c))
+                (then (global.set $pc (i32.add (global.get $pc) (i32.const 4))))
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; TESTSET (29) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 29))
+            (then
+              (local.set $val (call $get_reg (local.get $b)))
+              (if (i32.eq (call $is_truthy (local.get $val)) (local.get $c))
+                (then (call $set_reg (local.get $a) (local.get $val)))
+                (else (global.set $pc (i32.add (global.get $pc) (i32.const 4))))
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; CALL (30) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 30))
+            (then
+              (call $set_reg (local.get $a) (call $make_nil))
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; TAILCALL (31) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 31))
+            (then
+              (call $set_reg (local.get $a) (call $make_nil))
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; RETURN (32) - A B
+          (if (i32.eq (local.get $opcode) (i32.const 32))
+            (then
+              (return (call $to_number (call $get_reg (local.get $a))))
+            )
+          )
+          
+          ;; FORLOOP (33) - A sBx
+          (if (i32.eq (local.get $opcode) (i32.const 33))
+            (then
+              (local.set $tmp
+                (f64.add
+                  (call $to_number (call $get_reg (local.get $a)))
+                  (call $to_number (call $get_reg (i32.add (local.get $a) (i32.const 2))))
+                )
+              )
+              (call $set_reg (local.get $a) (call $make_num (local.get $tmp)))
+              (local.set $left (call $to_number (call $get_reg (i32.add (local.get $a) (i32.const 1)))))
+              (local.set $right (call $to_number (call $get_reg (i32.add (local.get $a) (i32.const 2)))))
+              (if (i32.or
+                (i32.and (f64.gt (local.get $right) (f64.const 0)) (f64.le (local.get $tmp) (local.get $left)))
+                (i32.and (f64.lt (local.get $right) (f64.const 0)) (f64.ge (local.get $tmp) (local.get $left)))
+              )
+                (then
+                  (global.set $pc (i32.add (global.get $pc) (i32.mul (local.get $sbx) (i32.const 4))))
+                  (call $set_reg (i32.add (local.get $a) (i32.const 3)) (call $make_num (local.get $tmp)))
+                )
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; FORPREP (34) - A sBx
+          (if (i32.eq (local.get $opcode) (i32.const 34))
+            (then
+              (call $set_reg
+                (local.get $a)
+                (call $make_num
+                  (f64.sub
+                    (call $to_number (call $get_reg (local.get $a)))
+                    (call $to_number (call $get_reg (i32.add (local.get $a) (i32.const 2))))
+                  )
+                )
+              )
+              (global.set $pc (i32.add (global.get $pc) (i32.mul (local.get $sbx) (i32.const 4))))
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; TFORLOOP (35) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 35))
+            (then (br $dispatch_end))
+          )
+          
+          ;; SETLIST (36) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 36))
+            (then
+              (local.set $tbl (call $get_reg (local.get $a)))
+              (local.set $i (i32.const 1))
+              (block $setlist_done
+                (loop $setlist_loop
+                  (br_if $setlist_done (i32.gt_u (local.get $i) (local.get $b)))
+                  (call $table_set
+                    (local.get $tbl)
+                    (call $make_num (f64.convert_i32_u (local.get $i)))
+                    (call $get_reg (i32.add (local.get $a) (local.get $i)))
+                  )
+                  (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                  (br $setlist_loop)
+                )
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; CLOSE (37) - A
+          (if (i32.eq (local.get $opcode) (i32.const 37))
+            (then (br $dispatch_end))
+          )
+          
+          ;; CLOSURE (38) - A Bx
+          (if (i32.eq (local.get $opcode) (i32.const 38))
+            (then
+              (call $set_reg
+                (local.get $a)
+                (i64.or (global.get $TAG_FUNCTION) (i64.extend_i32_u (local.get $b)))
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; VARARG (39) - A B
+          (if (i32.eq (local.get $opcode) (i32.const 39))
+            (then (br $dispatch_end))
+          )
+          
+          ;; TYPECHECK (40) - A B
+          (if (i32.eq (local.get $opcode) (i32.const 40))
+            (then
+              (call $set_reg (local.get $a) (call $make_bool (i32.const 1)))
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; ASSERT (41) - A Bx
+          (if (i32.eq (local.get $opcode) (i32.const 41))
+            (then
+              (if (i32.eqz (call $is_truthy (call $get_reg (local.get $a))))
+                (then (unreachable))
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; ASYNC (42) - A
+          (if (i32.eq (local.get $opcode) (i32.const 42))
+            (then (br $dispatch_end))
+          )
+          
+          ;; AWAIT (43) - A B
+          (if (i32.eq (local.get $opcode) (i32.const 43))
+            (then
+              (call $set_reg (local.get $a) (call $get_reg (local.get $b)))
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; SIMD_ADD (44) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 44))
+            (then
+              (local.set $i (i32.const 0))
+              (block $simd_done
+                (loop $simd_loop
+                  (br_if $simd_done (i32.ge_u (local.get $i) (i32.const 4)))
+                  (call $set_reg
+                    (i32.add (local.get $a) (local.get $i))
+                    (call $make_num
+                      (f64.add
+                        (call $to_number (call $get_reg (i32.add (local.get $b) (local.get $i))))
+                        (call $to_number (call $get_reg (i32.add (local.get $c) (local.get $i))))
+                      )
+                    )
+                  )
+                  (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                  (br $simd_loop)
+                )
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; SIMD_MUL (45) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 45))
+            (then
+              (local.set $i (i32.const 0))
+              (block $simd_mul_done
+                (loop $simd_mul_loop
+                  (br_if $simd_mul_done (i32.ge_u (local.get $i) (i32.const 4)))
+                  (call $set_reg
+                    (i32.add (local.get $a) (local.get $i))
+                    (call $make_num
+                      (f64.mul
+                        (call $to_number (call $get_reg (i32.add (local.get $b) (local.get $i))))
+                        (call $to_number (call $get_reg (i32.add (local.get $c) (local.get $i))))
+                      )
+                    )
+                  )
+                  (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                  (br $simd_mul_loop)
+                )
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; SIMD_DOT (46) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 46))
+            (then
+              (local.set $tmp (f64.const 0))
+              (local.set $i (i32.const 0))
+              (block $simd_dot_done
+                (loop $simd_dot_loop
+                  (br_if $simd_dot_done (i32.ge_u (local.get $i) (i32.const 4)))
+                  (local.set $tmp
+                    (f64.add
+                      (local.get $tmp)
+                      (f64.mul
+                        (call $to_number (call $get_reg (i32.add (local.get $b) (local.get $i))))
+                        (call $to_number (call $get_reg (i32.add (local.get $c) (local.get $i))))
+                      )
+                    )
+                  )
+                  (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                  (br $simd_dot_loop)
+                )
+              )
+              (call $set_reg (local.get $a) (call $make_num (local.get $tmp)))
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; GUARD (47) - A sBx
+          (if (i32.eq (local.get $opcode) (i32.const 47))
+            (then
+              (if (i32.eqz (call $is_truthy (call $get_reg (local.get $a))))
+                (then
+                  (global.set $pc (i32.add (global.get $pc) (i32.mul (local.get $sbx) (i32.const 4))))
+                )
+              )
+              (br $dispatch_end)
+            )
+          )
+          
+          ;; DEFER (48) - A
+          (if (i32.eq (local.get $opcode) (i32.const 48))
+            (then (br $dispatch_end))
+          )
+          
+          ;; MATCH (49) - A B C
+          (if (i32.eq (local.get $opcode) (i32.const 49))
+            (then (br $dispatch_end))
+          )
+          
+        ) ;; end dispatch block
+        
+        (br $dispatch)
       )
     )
-
-    ;; Return top of stack
-    (call $as_number
-      (call $pop))
+    
+    (call $to_number (call $get_reg (i32.const 0)))
   )
-
-  ;; ==========================================================================
+  
+  ;; ============================================================================
   ;; EXPORTS
-  ;; ==========================================================================
-
-  (export "alloc" (func $alloc))
-  (export "reset_heap" (func $reset_heap))
+  ;; ============================================================================
+  
   (export "execute" (func $execute))
-  (export "val_nil" (func $val_nil))
-  (export "val_bool" (func $val_bool))
-  (export "val_number" (func $val_number))
-  (export "is_nil" (func $is_nil))
-  (export "is_truthy" (func $is_truthy))
-  (export "add" (func $add))
-  (export "sub" (func $sub))
-  (export "mul" (func $mul))
-  (export "div" (func $div))
-  (export "simd_add4" (func $simd_add4))
-  (export "simd_mul4" (func $simd_mul4))
-  (export "simd_dot4" (func $simd_dot4))
-
-  ;; JS interop helpers
-  (export "memory" (memory 0))
+  (export "alloc" (func $alloc))
+  (export "get_reg" (func $get_reg))
+  (export "set_reg" (func $set_reg))
+  (export "new_table" (func $new_table))
+  (export "table_get" (func $table_get))
+  (export "table_set" (func $table_set))
+  (export "make_string" (func $make_string))
+  (export "string_concat" (func $string_concat))
+  (export "make_num" (func $make_num))
+  (export "make_nil" (func $make_nil))
+  (export "make_bool" (func $make_bool))
 )
