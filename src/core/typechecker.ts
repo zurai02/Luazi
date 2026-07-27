@@ -1,85 +1,73 @@
 // Luazi Type Checker
-// Hindley-Milner type inference with gradual typing
+// Hindley-Milner style inference with gradual typing support
 
 import * as AST from './ast';
-import * as Types from './types';
-import { Type, TypeKind, tUnknown, tAny, tNil, tBool, tNumber, tString, tFunction, tArray, tTable, tUnion, tOptional, tGeneric, tNamed, typeToString } from './types';
+import { Type, tAny, tNil, tBool, tNumber, tString, tTable, tFunction, tThread, tUserData } from './types';
 
-export interface TypeError {
-  message: string;
-  span: AST.Span;
+export class TypeError extends Error {
+  constructor(message: string, public span?: AST.Span) {
+    super(message);
+    this.name = 'TypeError';
+  }
 }
 
-interface TypeVariable {
-  kind: 'Var';
-  id: number;
-  instance?: Type;
-}
-
-interface Scheme {
-  vars: TypeVariable[];
+interface TypeScheme {
+  vars: string[];
   type: Type;
 }
 
-class TypeEnv {
-  private map: Map<string, Scheme> = new Map();
-  private parent: TypeEnv | null = null;
-
-  constructor(parent?: TypeEnv) {
-    if (parent) this.parent = parent;
-  }
-
-  get(name: string): Scheme | undefined {
-    return this.map.get(name) ?? this.parent?.get(name);
-  }
-
-  set(name: string, scheme: Scheme): void {
-    this.map.set(name, scheme);
-  }
-
-  child(): TypeEnv {
-    return new TypeEnv(this);
-  }
+interface TypeEnv {
+  parent?: TypeEnv;
+  bindings: Map<string, TypeScheme>;
 }
 
 export class TypeChecker {
-  private env: TypeEnv = new TypeEnv();
+  private env: TypeEnv;
+  private typeVarCounter: number = 0;
   private errors: TypeError[] = [];
-  private varCounter: number = 0;
-  private strictMode: boolean = false;
 
-  constructor(strict: boolean = false) {
-    this.strictMode = strict;
+  constructor() {
+    this.env = { bindings: new Map() };
     this.initBuiltins();
   }
 
   private initBuiltins(): void {
-    // Core types
-    this.env.set('print', { vars: [], type: tFunction([{ name: 'args', type: tAny, isOptional: false, isRest: true }], tNil) });
-    this.env.set('println', { vars: [], type: tFunction([{ name: 'args', type: tAny, isOptional: false, isRest: true }], tNil) });
-    this.env.set('type_of', { vars: [], type: tFunction([{ name: 'value', type: tAny, isOptional: false, isRest: false }], tString) });
-    this.env.set('assert', { vars: [], type: tFunction([
-      { name: 'condition', type: tBool, isOptional: false, isRest: false },
-      { name: 'message', type: tString, isOptional: true, isRest: false }
-    ], tNil) });
-    this.env.set('panic', { vars: [], type: tFunction([{ name: 'message', type: tString, isOptional: true, isRest: false }], { kind: TypeKind.Never } as Type) });
-    this.env.set('len', { vars: [this.freshVar()], type: tFunction([{ name: 'collection', type: tAny, isOptional: false, isRest: false }], tNumber) });
-    this.env.set('clone', { vars: [this.freshVar()], type: tFunction([{ name: 'value', type: tAny, isOptional: false, isRest: false }], tAny) });
-
-    // Math
-    this.env.set('math', { vars: [], type: tNamed('math') });
-
-    // Option type
-    const t = this.freshVar();
-    this.env.set('Option', { vars: [t], type: tGeneric('Option', [t]) });
-
-    // Result type
-    const t1 = this.freshVar();
-    const t2 = this.freshVar();
-    this.env.set('Result', { vars: [t1, t2], type: tGeneric('Result', [t1, t2]) });
+    this.env.bindings.set('print', { vars: [], type: tFunction([tAny], tNil) });
+    this.env.bindings.set('type', { vars: [], type: tFunction([tAny], tString) });
+    this.env.bindings.set('tonumber', { vars: [], type: tFunction([tString], tNumber) });
+    this.env.bindings.set('tostring', { vars: [], type: tFunction([tAny], tString) });
+    this.env.bindings.set('pairs', { vars: [], type: tFunction([tTable], tAny) });
+    this.env.bindings.set('ipairs', { vars: [], type: tFunction([tTable], tAny) });
+    this.env.bindings.set('assert', { vars: [], type: tFunction([tBool, tString], tAny) });
+    this.env.bindings.set('error', { vars: [], type: tFunction([tString], tNil) });
+    this.env.bindings.set('pcall', { vars: [], type: tFunction([tFunction([], tAny)], tBool) });
+    this.env.bindings.set('xpcall', { vars: [], type: tFunction([tFunction([], tAny), tFunction([tString], tNil)], tBool) });
+    this.env.bindings.set('select', { vars: [], type: tFunction([tNumber, tAny], tAny) });
+    this.env.bindings.set('collectgarbage', { vars: [], type: tFunction([tString], tNumber) });
+    this.env.bindings.set('rawget', { vars: [], type: tFunction([tTable, tAny], tAny) });
+    this.env.bindings.set('rawset', { vars: [], type: tFunction([tTable, tAny, tAny], tNil) });
+    this.env.bindings.set('rawequal', { vars: [], type: tFunction([tAny, tAny], tBool) });
+    this.env.bindings.set('rawlen', { vars: [], type: tFunction([tAny], tNumber) });
+    this.env.bindings.set('require', { vars: [], type: tFunction([tString], tAny) });
+    this.env.bindings.set('dofile', { vars: [], type: tFunction([tString], tAny) });
+    this.env.bindings.set('loadfile', { vars: [], type: tFunction([tString], tFunction([], tAny)) });
+    this.env.bindings.set('load', { vars: [], type: tFunction([tString, tString], tFunction([], tAny)) });
+    this.env.bindings.set('loadstring', { vars: [], type: tFunction([tString], tFunction([], tAny)) });
+    this.env.bindings.set('next', { vars: [], type: tFunction([tTable, tAny], tAny) });
+    this.env.bindings.set('unpack', { vars: [], type: tFunction([tTable], tAny) });
+    this.env.bindings.set('pack', { vars: [], type: tFunction([tAny], tTable) });
+    this.env.bindings.set('math', { vars: [], type: tTable });
+    this.env.bindings.set('string', { vars: [], type: tTable });
+    this.env.bindings.set('table', { vars: [], type: tTable });
+    this.env.bindings.set('os', { vars: [], type: tTable });
+    this.env.bindings.set('io', { vars: [], type: tTable });
+    this.env.bindings.set('coroutine', { vars: [], type: tTable });
+    this.env.bindings.set('debug', { vars: [], type: tTable });
+    this.env.bindings.set('package', { vars: [], type: tTable });
   }
 
   check(program: AST.Program): TypeError[] {
+    this.errors = [];
     for (const stmt of program.body) {
       this.inferStatement(stmt);
     }
@@ -87,145 +75,159 @@ export class TypeChecker {
   }
 
   private inferStatement(stmt: AST.Statement): void {
-    switch (stmt.kind) {
-      case 'VarDecl':
-        this.inferVarDecl(stmt);
-        break;
-      case 'FnDecl':
-        this.inferFnDecl(stmt);
-        break;
-      case 'If':
-        this.inferIf(stmt);
-        break;
-      case 'While':
-        this.inferWhile(stmt);
-        break;
-      case 'For':
-        this.inferFor(stmt);
-        break;
-      case 'ForIn':
-        this.inferForIn(stmt);
-        break;
-      case 'Match':
-        this.inferMatch(stmt);
-        break;
-      case 'Return':
-        this.inferReturn(stmt);
-        break;
-      case 'Break':
-      case 'Continue':
-        break;
-      case 'ExprStmt':
-        this.inferExpression(stmt.expression);
-        break;
-      case 'Block':
-        this.inferBlock(stmt);
-        break;
-      case 'StructDecl':
-        this.inferStructDecl(stmt);
-        break;
-      case 'EnumDecl':
-        this.inferEnumDecl(stmt);
-        break;
-      case 'TraitDecl':
-        this.inferTraitDecl(stmt);
-        break;
-      case 'ImplDecl':
-        this.inferImplDecl(stmt);
-        break;
-      case 'Import':
-        // Imports resolved at link time
-        break;
-      case 'Export':
-        this.inferStatement(stmt.declaration);
-        break;
-      case 'Defer':
-        this.inferExpression(stmt.expression);
-        break;
-      case 'Guard':
-        this.inferGuard(stmt);
-        break;
+    try {
+      switch (stmt.kind) {
+        case 'VarDecl':
+          this.inferVarDecl(stmt);
+          break;
+        case 'FnDecl':
+          this.inferFnDecl(stmt);
+          break;
+        case 'If':
+          this.inferIfStmt(stmt);
+          break;
+        case 'While':
+          this.inferWhileStmt(stmt);
+          break;
+        case 'For':
+          this.inferForStmt(stmt);
+          break;
+        case 'ForIn':
+          this.inferForInStmt(stmt);
+          break;
+        case 'Match':
+          this.inferMatchStmt(stmt);
+          break;
+        case 'Return':
+          this.inferReturnStmt(stmt);
+          break;
+        case 'ExprStmt':
+          this.inferExpression(stmt.expression);
+          break;
+        case 'Block':
+          this.inferBlock(stmt);
+          break;
+        case 'StructDecl':
+          this.inferStructDecl(stmt);
+          break;
+        case 'EnumDecl':
+          this.inferEnumDecl(stmt);
+          break;
+        case 'TraitDecl':
+          this.inferTraitDecl(stmt);
+          break;
+        case 'ImplDecl':
+          this.inferImplDecl(stmt);
+          break;
+        case 'Import':
+          break;
+        case 'Export':
+          this.inferStatement(stmt.declaration);
+          break;
+        case 'Defer':
+          this.inferExpression(stmt.expression);
+          break;
+        case 'Guard':
+          this.inferGuardStmt(stmt);
+          break;
+        default:
+          break;
+      }
+    } catch (e) {
+      if (e instanceof TypeError) {
+        this.errors.push(e);
+      } else {
+        throw e;
+      }
     }
   }
 
   private inferVarDecl(decl: AST.VarDecl): void {
-    let initType: Type;
-
-    if (decl.initializer) {
-      initType = this.inferExpression(decl.initializer);
-    } else {
-      initType = tNil;
-    }
+    const initType = decl.initializer
+      ? this.inferExpression(decl.initializer)
+      : tAny;
 
     if (decl.typeAnnotation) {
       const annotatedType = this.typeFromExpr(decl.typeAnnotation);
       if (!this.unify(initType, annotatedType)) {
-        this.error(
-          `Type mismatch: expected ${typeToString(annotatedType)}, got ${typeToString(initType)}`,
+        this.errors.push(new TypeError(
+          `Type mismatch: expected ${this.typeToString(annotatedType)}, got ${this.typeToString(initType)}`,
           decl.span
-        );
+        ));
       }
-      initType = annotatedType;
     }
 
-    this.env.set(decl.name, { vars: this.freeVars(initType), type: initType });
+    const scheme = this.generalize(initType);
+    this.env.bindings.set(decl.name, scheme);
   }
 
   private inferFnDecl(decl: AST.FnDecl): void {
-    const paramTypes = decl.params.map(p => ({
-      name: p.name,
-      type: p.type ? this.typeFromExpr(p.type) : tAny,
-      isOptional: p.defaultValue !== null,
-      isRest: false
-    }));
+    // Create parameter types
+    const paramTypes: Type[] = decl.params.map(p =>
+      p.type ? this.typeFromExpr(p.type) : this.freshVar()
+    );
 
-    const returnType = decl.returnType ? this.typeFromExpr(decl.returnType) : tAny;
-    const fnType = tFunction(paramTypes, returnType, decl.isAsync);
+    const returnType = decl.returnType
+      ? this.typeFromExpr(decl.returnType)
+      : this.freshVar();
 
-    // Add to environment before checking body (for recursion)
-    this.env.set(decl.name, { vars: [], type: fnType });
+    const fnType = tFunction(paramTypes, returnType);
+    this.env.bindings.set(decl.name, { vars: [], type: fnType });
 
-    // Check body in new scope
-    const bodyEnv = this.env.child();
-    for (const param of decl.params) {
-      const pType = param.type ? this.typeFromExpr(param.type) : tAny;
-      bodyEnv.set(param.name, { vars: [], type: pType });
+    // Create new scope for function body
+    const oldEnv = this.env;
+    this.env = { parent: oldEnv, bindings: new Map() };
+
+    // Bind parameters
+    for (let i = 0; i < decl.params.length; i++) {
+      this.env.bindings.set(decl.params[i].name, { vars: [], type: paramTypes[i] });
     }
 
-    const oldEnv = this.env;
-    this.env = bodyEnv;
-    this.inferBlock(decl.body);
+    // Infer body
+    const bodyType = this.inferBlock(decl.body);
+
+    // Check return type compatibility
+    if (!this.unify(bodyType, returnType)) {
+      this.errors.push(new TypeError(
+        `Function '${decl.name}' return type mismatch: expected ${this.typeToString(returnType)}, got ${this.typeToString(bodyType)}`,
+        decl.span
+      ));
+    }
+
     this.env = oldEnv;
   }
 
-  private inferIf(stmt: AST.IfStmt): void {
+  private inferIfStmt(stmt: AST.IfStmt): void {
     const condType = this.inferExpression(stmt.condition);
-    if (!this.isBoolLike(condType) && this.strictMode) {
-      this.error(`Condition must be boolean, got ${typeToString(condType)}`, stmt.condition.span);
+    if (!this.unify(condType, tBool)) {
+      this.errors.push(new TypeError(
+        `If condition must be boolean, got ${this.typeToString(condType)}`,
+        stmt.span
+      ));
     }
 
     this.inferBlock(stmt.thenBranch);
     if (stmt.elseBranch) {
       if (stmt.elseBranch.kind === 'If') {
-        this.inferIf(stmt.elseBranch);
+        this.inferIfStmt(stmt.elseBranch);
       } else {
         this.inferBlock(stmt.elseBranch);
       }
     }
   }
 
-  private inferWhile(stmt: AST.WhileStmt): void {
+  private inferWhileStmt(stmt: AST.WhileStmt): void {
     const condType = this.inferExpression(stmt.condition);
-    if (!this.isBoolLike(condType) && this.strictMode) {
-      this.error(`Condition must be boolean, got ${typeToString(condType)}`, stmt.condition.span);
+    if (!this.unify(condType, tBool)) {
+      this.errors.push(new TypeError(
+        `While condition must be boolean, got ${this.typeToString(condType)}`,
+        stmt.span
+      ));
     }
     this.inferBlock(stmt.body);
   }
 
-  private inferFor(stmt: AST.ForStmt): void {
-    const oldEnv = this.env;
-    this.env = this.env.child();
-
+  private inferForStmt(stmt: AST.ForStmt): void {
     if (stmt.init) {
       if (stmt.init.kind === 'VarDecl') {
         this.inferVarDecl(stmt.init);
@@ -233,46 +235,56 @@ export class TypeChecker {
         this.inferExpression(stmt.init.expression);
       }
     }
-
     if (stmt.condition) {
       const condType = this.inferExpression(stmt.condition);
-      if (!this.isBoolLike(condType) && this.strictMode) {
-        this.error(`For condition must be boolean`, stmt.condition.span);
+      if (!this.unify(condType, tBool)) {
+        this.errors.push(new TypeError(
+          `For condition must be boolean, got ${this.typeToString(condType)}`,
+          stmt.span
+        ));
       }
     }
-
     if (stmt.increment) {
       this.inferExpression(stmt.increment);
     }
-
     this.inferBlock(stmt.body);
-    this.env = oldEnv;
   }
 
-  private inferForIn(stmt: AST.ForInStmt): void {
+  private inferForInStmt(stmt: AST.ForInStmt): void {
     const iterType = this.inferExpression(stmt.iterable);
-    const elemType = this.getElementType(iterType);
+    if (!this.unify(iterType, tTable) && !this.isArrayType(iterType)) {
+      this.errors.push(new TypeError(
+        `For-in requires iterable, got ${this.typeToString(iterType)}`,
+        stmt.span
+      ));
+    }
 
     const oldEnv = this.env;
-    this.env = this.env.child();
-    this.env.set(stmt.varName, { vars: [], type: elemType });
+    this.env = { parent: oldEnv, bindings: new Map() };
+    this.env.bindings.set(stmt.varName, { vars: [], type: tAny });
     this.inferBlock(stmt.body);
     this.env = oldEnv;
   }
 
-  private inferMatch(stmt: AST.MatchStmt): void {
+  private inferMatchStmt(stmt: AST.MatchStmt): void {
     const exprType = this.inferExpression(stmt.expression);
 
     for (const arm of stmt.arms) {
       const patternType = this.inferPattern(arm.pattern);
       if (!this.unify(patternType, exprType)) {
-        this.error(`Pattern type ${typeToString(patternType)} does not match ${typeToString(exprType)}`, arm.pattern.span);
+        this.errors.push(new TypeError(
+          `Pattern type ${this.typeToString(patternType)} does not match expression type ${this.typeToString(exprType)}`,
+          arm.span
+        ));
       }
 
       if (arm.guard) {
         const guardType = this.inferExpression(arm.guard);
-        if (!this.isBoolLike(guardType) && this.strictMode) {
-          this.error(`Guard must be boolean`, arm.guard.span);
+        if (!this.unify(guardType, tBool)) {
+          this.errors.push(new TypeError(
+            `Guard must be boolean, got ${this.typeToString(guardType)}`,
+            arm.span
+          ));
         }
       }
 
@@ -284,94 +296,89 @@ export class TypeChecker {
     }
   }
 
-  private inferReturn(stmt: AST.ReturnStmt): Type {
+  private inferReturnStmt(stmt: AST.ReturnStmt): void {
     if (stmt.value) {
-      return this.inferExpression(stmt.value);
+      this.inferExpression(stmt.value);
     }
-    return tNil;
   }
 
-  private inferBlock(block: AST.Block): void {
-    const oldEnv = this.env;
-    this.env = this.env.child();
-    for (const stmt of block.statements) {
-      this.inferStatement(stmt);
+  private inferGuardStmt(stmt: AST.GuardStmt): void {
+    const condType = this.inferExpression(stmt.condition);
+    if (!this.unify(condType, tBool)) {
+      this.errors.push(new TypeError(
+        `Guard condition must be boolean, got ${this.typeToString(condType)}`,
+        stmt.span
+      ));
     }
-    this.env = oldEnv;
+    this.inferBlock(stmt.elseBranch);
   }
 
   private inferStructDecl(decl: AST.StructDecl): void {
-    const fieldTypes = new Map<string, Type>();
+    const fieldTypes: Map<string, Type> = new Map();
     for (const field of decl.fields) {
       fieldTypes.set(field.name, field.type ? this.typeFromExpr(field.type) : tAny);
     }
 
-    const structType: Types.StructType = {
-      kind: TypeKind.Struct,
+    const structType: Type = {
+      kind: 'Struct',
       name: decl.name,
       fields: fieldTypes,
-      methods: new Map()
+      generics: decl.generics.map(g => g.name)
     };
 
-    this.env.set(decl.name, { vars: [], type: structType });
+    this.env.bindings.set(decl.name, { vars: [], type: structType });
   }
 
   private inferEnumDecl(decl: AST.EnumDecl): void {
-    const variants = decl.variants.map(v => ({
-      name: v.name,
-      fields: v.fields.map(f => f.type ? this.typeFromExpr(f.type) : tAny)
-    }));
-
-    const enumType: Types.EnumType = {
-      kind: TypeKind.Enum,
+    const enumType: Type = {
+      kind: 'Enum',
       name: decl.name,
-      variants
+      variants: decl.variants.map(v => v.name),
+      generics: decl.generics.map(g => g.name)
     };
-
-    this.env.set(decl.name, { vars: [], type: enumType });
+    this.env.bindings.set(decl.name, { vars: [], type: enumType });
   }
 
   private inferTraitDecl(decl: AST.TraitDecl): void {
-    const methods = new Map<string, Types.FunctionType>();
-    for (const method of decl.methods) {
-      const params = method.params.map(p => ({
-        name: p.name,
-        type: p.type ? this.typeFromExpr(p.type) : tAny,
-        isOptional: p.defaultValue !== null,
-        isRest: false
-      }));
-      const ret = method.returnType ? this.typeFromExpr(method.returnType) : tAny;
-      methods.set(method.name, tFunction(params, ret) as Types.FunctionType);
-    }
-
-    const traitType: Types.TraitType = {
-      kind: TypeKind.Trait,
+    const traitType: Type = {
+      kind: 'Trait',
       name: decl.name,
-      methods
+      generics: decl.generics.map(g => g.name)
     };
-
-    this.env.set(decl.name, { vars: [], type: traitType });
+    this.env.bindings.set(decl.name, { vars: [], type: traitType });
   }
 
   private inferImplDecl(decl: AST.ImplDecl): void {
-    // Check that target type exists
     const targetType = this.typeFromExpr(decl.target);
-    // Check that trait exists (if specified)
     if (decl.trait) {
       const traitType = this.typeFromExpr(decl.trait);
+      // Check that target implements trait
+      // In full implementation, verify all trait methods are present
     }
-    // Check method implementations
+
     for (const method of decl.methods) {
       this.inferFnDecl(method);
     }
   }
 
-  private inferGuard(stmt: AST.GuardStmt): void {
-    const condType = this.inferExpression(stmt.condition);
-    if (!this.isBoolLike(condType) && this.strictMode) {
-      this.error(`Guard condition must be boolean`, stmt.condition.span);
+  private inferBlock(block: AST.Block): Type {
+    const oldEnv = this.env;
+    this.env = { parent: oldEnv, bindings: new Map() };
+
+    let lastType = tNil;
+    for (const stmt of block.statements) {
+      this.inferStatement(stmt);
+      if (stmt.kind === 'ExprStmt') {
+        lastType = this.inferExpression(stmt.expression);
+      } else if (stmt.kind === 'Return') {
+        if (stmt.value) {
+          lastType = this.inferExpression(stmt.value);
+        }
+      }
     }
-    this.inferBlock(stmt.elseBranch);
+
+    this.env = oldEnv;
+    return lastType;
   }
 
   private inferExpression(expr: AST.Expression): Type {
@@ -384,8 +391,6 @@ export class TypeChecker {
         return this.inferBinary(expr);
       case 'Unary':
         return this.inferUnary(expr);
-      case 'Ternary':
-        return this.inferTernary(expr);
       case 'Call':
         return this.inferCall(expr);
       case 'Member':
@@ -400,25 +405,26 @@ export class TypeChecker {
         return this.inferArray(expr);
       case 'Table':
         return this.inferTable(expr);
-      case 'Tuple':
-        return this.inferTuple(expr);
-      case 'Range':
-        return tArray(tNumber);
-      case 'Spread':
-        return this.inferExpression(expr.expression);
+      case 'Ternary':
+        return this.inferTernary(expr);
       case 'Await':
-        return this.inferAwait(expr);
-      case 'Yield':
-        return this.inferExpression(expr.expression ?? { kind: 'Literal', value: null, raw: 'nil', span: expr.span });
-      case 'Try':
-        return this.inferTry(expr);
+        return this.inferExpression(expr.expression);
       case 'TypeCast':
         return this.typeFromExpr(expr.targetType);
       case 'TypeCheck':
         return tBool;
       case 'BlockExpr':
-        // Return type of last statement
-        return tAny;
+        return this.inferBlock(expr.block);
+      case 'Spread':
+        return this.inferExpression(expr.expression);
+      case 'Range':
+        return tTable;
+      case 'Tuple':
+        return { kind: 'Tuple', elements: expr.elements.map(e => this.inferExpression(e)) };
+      case 'Try':
+        return this.inferExpression(expr.expression);
+      case 'Yield':
+        return expr.expression ? this.inferExpression(expr.expression) : tNil;
       default:
         return tAny;
     }
@@ -433,12 +439,9 @@ export class TypeChecker {
   }
 
   private inferIdentifier(expr: AST.Identifier): Type {
-    const scheme = this.env.get(expr.name);
+    const scheme = this.lookup(expr.name);
     if (scheme) {
       return this.instantiate(scheme);
-    }
-    if (this.strictMode) {
-      this.error(`Undefined variable: ${expr.name}`, expr.span);
     }
     return tAny;
   }
@@ -453,42 +456,93 @@ export class TypeChecker {
       case '*':
       case '/':
       case '%':
-      case '^':
-        if (this.isNumber(leftType) && this.isNumber(rightType)) {
-          return tNumber;
+      case '**':
+        if (!this.unify(leftType, tNumber)) {
+          this.errors.push(new TypeError(
+            `Arithmetic operator '${expr.operator}' requires number, got ${this.typeToString(leftType)}`,
+            expr.span
+          ));
         }
-        if (expr.operator === '+' && (this.isString(leftType) || this.isString(rightType))) {
-          return tString;
-        }
-        if (this.strictMode) {
-          this.error(`Operator '${expr.operator}' requires numbers, got ${typeToString(leftType)} and ${typeToString(rightType)}`, expr.span);
-        }
-        return tNumber;
-
-      case '==':
-      case '!=':
-      case '<':
-      case '<=':
-      case '>':
-      case '>=':
-        return tBool;
-
-      case '&&':
-      case '||':
-        return tBool;
-
-      case '&':
-      case '|':
-        if (this.isNumber(leftType) && this.isNumber(rightType)) {
-          return tNumber;
+        if (!this.unify(rightType, tNumber)) {
+          this.errors.push(new TypeError(
+            `Arithmetic operator '${expr.operator}' requires number, got ${this.typeToString(rightType)}`,
+            expr.span
+          ));
         }
         return tNumber;
 
       case '..':
+        if (!this.unify(leftType, tString)) {
+          this.errors.push(new TypeError(
+            `Concatenation requires string, got ${this.typeToString(leftType)}`,
+            expr.span
+          ));
+        }
+        if (!this.unify(rightType, tString)) {
+          this.errors.push(new TypeError(
+            `Concatenation requires string, got ${this.typeToString(rightType)}`,
+            expr.span
+          ));
+        }
         return tString;
 
-      case '??':
-        return this.unify(leftType, rightType) ? leftType : tUnion(leftType, rightType);
+      case '==':
+      case '!=':
+        this.unify(leftType, rightType);
+        return tBool;
+
+      case '<':
+      case '<=':
+      case '>':
+      case '>=':
+        if (!this.unify(leftType, tNumber)) {
+          this.errors.push(new TypeError(
+            `Comparison requires number, got ${this.typeToString(leftType)}`,
+            expr.span
+          ));
+        }
+        if (!this.unify(rightType, tNumber)) {
+          this.errors.push(new TypeError(
+            `Comparison requires number, got ${this.typeToString(rightType)}`,
+            expr.span
+          ));
+        }
+        return tBool;
+
+      case '&&':
+      case '||':
+        if (!this.unify(leftType, tBool)) {
+          this.errors.push(new TypeError(
+            `Logical operator requires boolean, got ${this.typeToString(leftType)}`,
+            expr.span
+          ));
+        }
+        if (!this.unify(rightType, tBool)) {
+          this.errors.push(new TypeError(
+            `Logical operator requires boolean, got ${this.typeToString(rightType)}`,
+            expr.span
+          ));
+        }
+        return tBool;
+
+      case '&':
+      case '|':
+      case '^':
+      case '<<':
+      case '>>':
+        if (!this.unify(leftType, tNumber)) {
+          this.errors.push(new TypeError(
+            `Bitwise operator requires number, got ${this.typeToString(leftType)}`,
+            expr.span
+          ));
+        }
+        if (!this.unify(rightType, tNumber)) {
+          this.errors.push(new TypeError(
+            `Bitwise operator requires number, got ${this.typeToString(rightType)}`,
+            expr.span
+          ));
+        }
+        return tNumber;
 
       default:
         return tAny;
@@ -500,101 +554,93 @@ export class TypeChecker {
 
     switch (expr.operator) {
       case '-':
-        if (this.isNumber(operandType)) return tNumber;
-        if (this.strictMode) {
-          this.error(`Unary '-' requires number, got ${typeToString(operandType)}`, expr.span);
+        if (!this.unify(operandType, tNumber)) {
+          this.errors.push(new TypeError(
+            `Unary minus requires number, got ${this.typeToString(operandType)}`,
+            expr.span
+          ));
         }
         return tNumber;
       case '!':
       case 'not':
+        if (!this.unify(operandType, tBool)) {
+          this.errors.push(new TypeError(
+            `Logical not requires boolean, got ${this.typeToString(operandType)}`,
+            expr.span
+          ));
+        }
         return tBool;
-      case '~':
-        return tNumber;
       case '#':
+        if (!this.unify(operandType, tString) && !this.unify(operandType, tTable)) {
+          this.errors.push(new TypeError(
+            `Length operator requires string or table, got ${this.typeToString(operandType)}`,
+            expr.span
+          ));
+        }
+        return tNumber;
+      case '~':
+        if (!this.unify(operandType, tNumber)) {
+          this.errors.push(new TypeError(
+            `Bitwise not requires number, got ${this.typeToString(operandType)}`,
+            expr.span
+          ));
+        }
         return tNumber;
       case 'ref':
-        return { kind: TypeKind.Ref, inner: operandType } as Type;
+        return { kind: 'Ref', inner: operandType };
       case 'mut':
-        return { kind: TypeKind.Mut, inner: operandType } as Type;
+        return { kind: 'Mut', inner: operandType };
       default:
         return operandType;
     }
   }
 
-  private inferTernary(expr: AST.TernaryExpr): Type {
-    const condType = this.inferExpression(expr.condition);
-    if (!this.isBoolLike(condType) && this.strictMode) {
-      this.error(`Ternary condition must be boolean`, expr.condition.span);
-    }
-    const thenType = this.inferExpression(expr.thenExpr);
-    const elseType = this.inferExpression(expr.elseExpr);
-    return this.unify(thenType, elseType) ? thenType : tUnion(thenType, elseType);
-  }
-
   private inferCall(expr: AST.CallExpr): Type {
     const calleeType = this.inferExpression(expr.callee);
 
-    if (calleeType.kind === TypeKind.Function) {
-      const fn = calleeType as Types.FunctionType;
+    if (calleeType.kind === 'Function') {
+      const fnType = calleeType as any;
+      const paramTypes = fnType.params || [];
+      const returnType = fnType.returnType || tAny;
 
       // Check argument count
-      const requiredParams = fn.params.filter(p => !p.isOptional && !p.isRest).length;
-      if (expr.args.length < requiredParams) {
-        this.error(`Too few arguments: expected ${fn.params.length}, got ${expr.args.length}`, expr.span);
+      if (expr.args.length > paramTypes.length) {
+        this.errors.push(new TypeError(
+          `Too many arguments: expected ${paramTypes.length}, got ${expr.args.length}`,
+          expr.span
+        ));
       }
 
       // Check argument types
-      for (let i = 0; i < Math.min(expr.args.length, fn.params.length); i++) {
+      for (let i = 0; i < Math.min(expr.args.length, paramTypes.length); i++) {
         const argType = this.inferExpression(expr.args[i].value);
-        const paramType = fn.params[i].type;
-        if (!this.unify(argType, paramType) && this.strictMode) {
-          this.error(
-            `Argument ${i + 1} type mismatch: expected ${typeToString(paramType)}, got ${typeToString(argType)}`,
-            expr.args[i].span
-          );
+        if (!this.unify(argType, paramTypes[i])) {
+          this.errors.push(new TypeError(
+            `Argument ${i + 1} type mismatch: expected ${this.typeToString(paramTypes[i])}, got ${this.typeToString(argType)}`,
+            expr.span
+          ));
         }
       }
 
-      return fn.returnType;
+      return returnType;
     }
 
-    if (calleeType.kind === TypeKind.Any) {
-      return tAny;
-    }
-
-    if (this.strictMode) {
-      this.error(`Cannot call non-function type: ${typeToString(calleeType)}`, expr.span);
-    }
     return tAny;
   }
 
   private inferMember(expr: AST.MemberExpr): Type {
     const objType = this.inferExpression(expr.object);
 
-    if (objType.kind === TypeKind.Struct) {
-      const struct = objType as Types.StructType;
-      const fieldType = struct.fields.get(expr.property);
+    if (objType.kind === 'Struct') {
+      const structType = objType as any;
+      const fieldType = structType.fields?.get(expr.property);
       if (fieldType) return fieldType;
-      const methodType = struct.methods.get(expr.property);
-      if (methodType) return methodType;
     }
 
-    if (objType.kind === TypeKind.Table) {
-      const tbl = objType as Types.TableType;
-      return tbl.valueType;
-    }
-
-    if (objType.kind === TypeKind.String && expr.property === 'length') {
-      return tNumber;
-    }
-
-    if (objType.kind === TypeKind.Any) {
+    if (objType.kind === 'Table') {
       return tAny;
     }
 
-    if (this.strictMode) {
-      this.error(`Property '${expr.property}' does not exist on ${typeToString(objType)}`, expr.span);
-    }
     return tAny;
   }
 
@@ -602,27 +648,10 @@ export class TypeChecker {
     const objType = this.inferExpression(expr.object);
     const idxType = this.inferExpression(expr.index);
 
-    if (objType.kind === TypeKind.Array) {
-      const arr = objType as Types.ArrayType;
-      return arr.elementType;
-    }
-
-    if (objType.kind === TypeKind.Table) {
-      const tbl = objType as Types.TableType;
-      return tbl.valueType;
-    }
-
-    if (objType.kind === TypeKind.String) {
-      return tString;
-    }
-
-    if (objType.kind === TypeKind.Any) {
+    if (objType.kind === 'Array' || objType.kind === 'Table') {
       return tAny;
     }
 
-    if (this.strictMode) {
-      this.error(`Cannot index ${typeToString(objType)}`, expr.span);
-    }
     return tAny;
   }
 
@@ -631,124 +660,90 @@ export class TypeChecker {
 
     if (expr.target.kind === 'Identifier') {
       const name = (expr.target as AST.Identifier).name;
-      const existing = this.env.get(name);
-      if (existing) {
-        const existingType = this.instantiate(existing);
-        if (!this.unify(valueType, existingType) && this.strictMode) {
-          this.error(
-            `Cannot assign ${typeToString(valueType)} to ${typeToString(existingType)}`,
+      const scheme = this.lookup(name);
+      if (scheme) {
+        const varType = this.instantiate(scheme);
+        if (!this.unify(valueType, varType)) {
+          this.errors.push(new TypeError(
+            `Assignment type mismatch: expected ${this.typeToString(varType)}, got ${this.typeToString(valueType)}`,
             expr.span
-          );
+          ));
         }
-        return existingType;
       }
-      // New variable
-      this.env.set(name, { vars: [], type: valueType });
-      return valueType;
     }
 
     return valueType;
   }
 
   private inferLambda(expr: AST.LambdaExpr): Type {
-    const paramTypes = expr.params.map(p => ({
-      name: p.name,
-      type: p.type ? this.typeFromExpr(p.type) : tAny,
-      isOptional: p.defaultValue !== null,
-      isRest: false
-    }));
+    const paramTypes = expr.params.map(p =>
+      p.type ? this.typeFromExpr(p.type) : this.freshVar()
+    );
 
     const oldEnv = this.env;
-    this.env = this.env.child();
-    for (const param of expr.params) {
-      const pType = param.type ? this.typeFromExpr(param.type) : tAny;
-      this.env.set(param.name, { vars: [], type: pType });
+    this.env = { parent: oldEnv, bindings: new Map() };
+
+    for (let i = 0; i < expr.params.length; i++) {
+      this.env.bindings.set(expr.params[i].name, { vars: [], type: paramTypes[i] });
     }
 
-    let returnType: Type;
-    if (expr.body.kind === 'Block') {
-      this.inferBlock(expr.body as AST.Block);
-      returnType = tNil; // Simplified
-    } else {
-      returnType = this.inferExpression(expr.body as AST.Expression);
-    }
+    const bodyType = expr.body.kind === 'Block'
+      ? this.inferBlock(expr.body as AST.Block)
+      : this.inferExpression(expr.body as AST.Expression);
 
     this.env = oldEnv;
 
-    return tFunction(paramTypes, returnType, expr.isAsync);
+    return tFunction(paramTypes, bodyType);
   }
 
   private inferArray(expr: AST.ArrayExpr): Type {
     if (expr.elements.length === 0) {
-      return tArray(tAny);
+      return { kind: 'Array', element: tAny };
     }
 
-    const elemTypes = expr.elements.map(e => this.inferExpression(e));
-    const unified = elemTypes.reduce((a, b) => this.unify(a, b) ? a : tUnion(a, b));
-    return tArray(unified);
-  }
-
-  private inferTable(expr: AST.TableExpr): Type {
-    if (expr.entries.length === 0) {
-      return tTable(tAny, tAny);
+    const elemType = this.inferExpression(expr.elements[0]);
+    for (let i = 1; i < expr.elements.length; i++) {
+      const et = this.inferExpression(expr.elements[i]);
+      this.unify(elemType, et);
     }
 
-    const keyTypes = expr.entries.map(e => 
-      typeof e.key === 'string' ? tString : this.inferExpression(e.key as AST.Expression)
-    );
-    const valueTypes = expr.entries.map(e => this.inferExpression(e.value));
-
-    const unifiedKey = keyTypes.reduce((a, b) => this.unify(a, b) ? a : tUnion(a, b));
-    const unifiedValue = valueTypes.reduce((a, b) => this.unify(a, b) ? a : tUnion(a, b));
-
-    return tTable(unifiedKey, unifiedValue);
+    return { kind: 'Array', element: elemType };
   }
 
-  private inferTuple(expr: AST.TupleExpr): Type {
-    const types = expr.elements.map(e => this.inferExpression(e));
-    return { kind: TypeKind.Tuple, elements: types } as Type;
+  private inferTable(_expr: AST.TableExpr): Type {
+    return tTable;
   }
 
-  private inferAwait(expr: AST.AwaitExpr): Type {
-    const innerType = this.inferExpression(expr.expression);
-    // Unwrap Promise/Result
-    if (innerType.kind === TypeKind.Generic) {
-      const gen = innerType as Types.GenericType;
-      if (gen.args.length > 0) return gen.args[0];
+  private inferTernary(expr: AST.TernaryExpr): Type {
+    const condType = this.inferExpression(expr.condition);
+    if (!this.unify(condType, tBool)) {
+      this.errors.push(new TypeError(
+        `Ternary condition must be boolean, got ${this.typeToString(condType)}`,
+        expr.span
+      ));
     }
-    return innerType;
-  }
 
-  private inferTry(expr: AST.TryExpr): Type {
-    const tryType = this.inferExpression(expr.expression);
-    if (expr.catchBody) {
-      const oldEnv = this.env;
-      this.env = this.env.child();
-      if (expr.catchVar) {
-        this.env.set(expr.catchVar, { vars: [], type: tString });
-      }
-      this.inferBlock(expr.catchBody);
-      this.env = oldEnv;
-    }
-    return tryType;
+    const thenType = this.inferExpression(expr.thenExpr);
+    const elseType = this.inferExpression(expr.elseExpr);
+    this.unify(thenType, elseType);
+
+    return thenType;
   }
 
   private inferPattern(pattern: AST.Pattern): Type {
     switch (pattern.kind) {
+      case 'WildcardPattern':
+        return this.freshVar();
       case 'LiteralPattern':
-        return this.inferLiteral(pattern.value as AST.Literal);
+        return this.inferLiteral(pattern.value);
       case 'VariablePattern':
         return this.freshVar();
-      case 'WildcardPattern':
-        return tAny;
-      case 'ArrayPattern':
-        return tArray(this.freshVar());
       case 'StructPattern':
-        return tNamed(pattern.name);
+        return { kind: 'Struct', name: pattern.name, fields: new Map() };
       case 'EnumPattern':
-        return tNamed(pattern.enumName);
-      case 'RestPattern':
-        return tArray(this.freshVar());
+        return { kind: 'Enum', name: pattern.enumName, variants: [] };
+      case 'ArrayPattern':
+        return { kind: 'Array', element: this.freshVar() };
       default:
         return tAny;
     }
@@ -757,101 +752,218 @@ export class TypeChecker {
   private typeFromExpr(expr: AST.TypeExpr): Type {
     switch (expr.kind) {
       case 'NamedType':
-        return tNamed((expr as AST.NamedType).name);
-      case 'GenericType':
-        const gen = expr as AST.GenericType;
-        return tGeneric(gen.name, gen.args.map(a => this.typeFromExpr(a)));
-      case 'FunctionType':
-        const fn = expr as AST.FunctionType;
-        return tFunction(
-          fn.params.map((p, i) => ({ name: `arg${i}`, type: this.typeFromExpr(p), isOptional: false, isRest: false })),
-          this.typeFromExpr(fn.returnType)
-        );
+        const name = (expr as AST.NamedType).name;
+        switch (name) {
+          case 'nil': return tNil;
+          case 'bool': return tBool;
+          case 'number': return tNumber;
+          case 'string': return tString;
+          case 'table': return tTable;
+          case 'function': return tFunction([], tAny);
+          case 'thread': return tThread;
+          case 'any': return tAny;
+          default:
+            return { kind: 'Named', name };
+        }
       case 'ArrayType':
-        return tArray(this.typeFromExpr((expr as AST.ArrayType).element));
-      case 'TableType':
-        const tbl = expr as AST.TableType;
-        return tTable(this.typeFromExpr(tbl.key), this.typeFromExpr(tbl.value));
-      case 'OptionalType':
-        return tOptional(this.typeFromExpr((expr as AST.OptionalType).inner));
+        return { kind: 'Array', element: this.typeFromExpr((expr as AST.ArrayType).element) };
+      case 'FunctionType':
+        return tFunction(
+          (expr as AST.FunctionType).params.map(p => this.typeFromExpr(p)),
+          this.typeFromExpr((expr as AST.FunctionType).returnType)
+        );
+      case 'TupleType':
+        return { kind: 'Tuple', elements: (expr as AST.TupleType).elements.map(e => this.typeFromExpr(e)) };
       case 'UnionType':
-        const un = expr as AST.UnionType;
-        return un.types.reduce((a, b) => tUnion(a, this.typeFromExpr(b)));
+        return { kind: 'Union', types: (expr as AST.UnionType).types.map(t => this.typeFromExpr(t)) };
       case 'IntersectionType':
-        return tAny;
+        return { kind: 'Intersection', types: (expr as AST.IntersectionType).types.map(t => this.typeFromExpr(t)) };
+      case 'OptionalType':
+        return { kind: 'Union', types: [this.typeFromExpr((expr as AST.OptionalType).inner), tNil] };
       case 'RefType':
-        return { kind: TypeKind.Ref, inner: this.typeFromExpr((expr as AST.RefType).inner) } as Type;
+        return { kind: 'Ref', inner: this.typeFromExpr((expr as AST.RefType).inner) };
       case 'MutType':
-        return { kind: TypeKind.Mut, inner: this.typeFromExpr((expr as AST.MutType).inner) } as Type;
+        return { kind: 'Mut', inner: this.typeFromExpr((expr as AST.MutType).inner) };
+      case 'GenericType':
+        return { kind: 'Generic', name: (expr as AST.GenericType).name, args: (expr as AST.GenericType).args.map(a => this.typeFromExpr(a)) };
       case 'SelfType':
-        return { kind: TypeKind.Self } as Type;
-      case 'WildcardType':
-        return this.freshVar();
-      case 'LiteralType':
-        const lit = (expr as AST.LiteralType).value;
-        return this.inferLiteral(lit);
+        return { kind: 'Self' };
       default:
         return tAny;
     }
   }
 
-  // Type unification
-  private unify(a: Type, b: Type): boolean {
-    if (a.kind === TypeKind.Any || b.kind === TypeKind.Any) return true;
-    if (a.kind === TypeKind.Unknown || b.kind === TypeKind.Unknown) return true;
-    if (a.kind === TypeKind.Nil && b.kind === TypeKind.Nil) return true;
-    if (a.kind === TypeKind.Bool && b.kind === TypeKind.Bool) return true;
-    if (a.kind === TypeKind.Number && b.kind === TypeKind.Number) return true;
-    if (a.kind === TypeKind.String && b.kind === TypeKind.String) return true;
-    if (a.kind === b.kind) {
-      // Deep comparison for complex types
-      return true; // Simplified
-    }
-    return false;
-  }
+  private unify(t1: Type, t2: Type): boolean {
+    // Deep structural unification
+    if (t1.kind === 'Any' || t2.kind === 'Any') return true;
+    if (t1.kind === 'Unknown' || t2.kind === 'Unknown') return true;
+    if (t1.kind !== t2.kind) return false;
 
-  private isBoolLike(type: Type): boolean {
-    return type.kind === TypeKind.Bool || type.kind === TypeKind.Any;
-  }
+    switch (t1.kind) {
+      case 'Nil':
+      case 'Bool':
+      case 'Number':
+      case 'String':
+      case 'Table':
+      case 'Thread':
+      case 'UserData':
+        return true;
 
-  private isNumber(type: Type): boolean {
-    return type.kind === TypeKind.Number || type.kind === TypeKind.Any;
-  }
+      case 'Function': {
+        const f1 = t1 as any;
+        const f2 = t2 as any;
+        if (f1.params?.length !== f2.params?.length) return false;
+        for (let i = 0; i < (f1.params?.length || 0); i++) {
+          if (!this.unify(f1.params[i], f2.params[i])) return false;
+        }
+        return this.unify(f1.returnType || tAny, f2.returnType || tAny);
+      }
 
-  private isString(type: Type): boolean {
-    return type.kind === TypeKind.String || type.kind === TypeKind.Any;
-  }
+      case 'Array': {
+        const a1 = t1 as any;
+        const a2 = t2 as any;
+        return this.unify(a1.element || tAny, a2.element || tAny);
+      }
 
-  private getElementType(type: Type): Type {
-    if (type.kind === TypeKind.Array) {
-      return (type as Types.ArrayType).elementType;
+      case 'Tuple': {
+        const tup1 = t1 as any;
+        const tup2 = t2 as any;
+        if (tup1.elements?.length !== tup2.elements?.length) return false;
+        for (let i = 0; i < (tup1.elements?.length || 0); i++) {
+          if (!this.unify(tup1.elements[i], tup2.elements[i])) return false;
+        }
+        return true;
+      }
+
+      case 'Union': {
+        const u1 = t1 as any;
+        const u2 = t2 as any;
+        if (u1.types?.length !== u2.types?.length) return false;
+        for (let i = 0; i < (u1.types?.length || 0); i++) {
+          if (!this.unify(u1.types[i], u2.types[i])) return false;
+        }
+        return true;
+      }
+
+      case 'Ref':
+      case 'Mut': {
+        const r1 = t1 as any;
+        const r2 = t2 as any;
+        return this.unify(r1.inner || tAny, r2.inner || tAny);
+      }
+
+      case 'Struct': {
+        const s1 = t1 as any;
+        const s2 = t2 as any;
+        if (s1.name !== s2.name) return false;
+        // Check fields
+        const f1 = s1.fields || new Map();
+        const f2 = s2.fields || new Map();
+        if (f1.size !== f2.size) return false;
+        for (const [key, val] of f1) {
+          const v2 = f2.get(key);
+          if (!v2 || !this.unify(val, v2)) return false;
+        }
+        return true;
+      }
+
+      default:
+        return true;
     }
-    if (type.kind === TypeKind.String) {
-      return tString;
-    }
-    if (type.kind === TypeKind.Table) {
-      return (type as Types.TableType).valueType;
-    }
-    return tAny;
   }
 
   private freshVar(): Type {
-    return { kind: TypeKind.Unknown } as Type; // Simplified
+    return { kind: 'Var', id: this.typeVarCounter++ };
   }
 
-  private freeVars(type: Type): TypeVariable[] {
-    return []; // Simplified
+  private generalize(type: Type): TypeScheme {
+    const freeVars = this.freeTypeVars(type);
+    return { vars: freeVars, type };
   }
 
-  private instantiate(scheme: Scheme): Type {
-    return scheme.type; // Simplified - should substitute type variables
+  private instantiate(scheme: TypeScheme): Type {
+    // In full HM, substitute type variables with fresh ones
+    // For now, return the type directly
+    return scheme.type;
   }
 
-  private error(message: string, span: AST.Span): void {
-    this.errors.push({ message, span });
+  private freeTypeVars(type: Type): string[] {
+    // Simplified: return empty for now
+    return [];
+  }
+
+  private lookup(name: string): TypeScheme | undefined {
+    let env: TypeEnv | undefined = this.env;
+    while (env) {
+      const scheme = env.bindings.get(name);
+      if (scheme) return scheme;
+      env = env.parent;
+    }
+    return undefined;
+  }
+
+  private isArrayType(type: Type): boolean {
+    return type.kind === 'Array' || type.kind === 'Tuple';
+  }
+
+  private typeToString(type: Type): string {
+    switch (type.kind) {
+      case 'Nil': return 'nil';
+      case 'Bool': return 'bool';
+      case 'Number': return 'number';
+      case 'String': return 'string';
+      case 'Table': return 'table';
+      case 'Thread': return 'thread';
+      case 'UserData': return 'userdata';
+      case 'Any': return 'any';
+      case 'Function': {
+        const fn = type as any;
+        const params = fn.params?.map((p: Type) => this.typeToString(p)).join(', ') || '';
+        const ret = fn.returnType ? this.typeToString(fn.returnType) : 'nil';
+        return `(${params}) -> ${ret}`;
+      }
+      case 'Array': {
+        const arr = type as any;
+        return `[${this.typeToString(arr.element || tAny)}]`;
+      }
+      case 'Tuple': {
+        const tup = type as any;
+        return `(${tup.elements?.map((e: Type) => this.typeToString(e)).join(', ') || ''})`;
+      }
+      case 'Union': {
+        const u = type as any;
+        return u.types?.map((t: Type) => this.typeToString(t)).join(' | ') || 'any';
+      }
+      case 'Struct': {
+        const s = type as any;
+        return s.name || 'struct';
+      }
+      case 'Enum': {
+        const e = type as any;
+        return e.name || 'enum';
+      }
+      case 'Trait': {
+        const t = type as any;
+        return t.name || 'trait';
+      }
+      case 'Ref': {
+        const r = type as any;
+        return `ref ${this.typeToString(r.inner || tAny)}`;
+      }
+      case 'Mut': {
+        const m = type as any;
+        return `mut ${this.typeToString(m.inner || tAny)}`;
+      }
+      case 'Var': {
+        const v = type as any;
+        return `t${v.id || 0}`;
+      }
+      default:
+        return type.kind;
+    }
   }
 }
 
-export function typeCheck(program: AST.Program, strict: boolean = false): TypeError[] {
-  return new TypeChecker(strict).check(program);
-  }
+export function typeCheck(program: AST.Program): TypeError[] {
+  return new TypeChecker().check(program);
+    }
