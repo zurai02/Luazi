@@ -27,6 +27,9 @@ export class Parser {
   private prefixParselets: Map<TokenType, PrefixParselet> = new Map();
   private infixParselets: Map<TokenType, InfixParselet> = new Map();
 
+  // Loop stack for break/continue label resolution
+  private loopStack: { label: string | null; startPos: number }[] = [];
+
   constructor(tokens: Token[]) {
     this.tokens = tokens;
     this.registerParselets();
@@ -150,6 +153,27 @@ export class Parser {
       })
     });
 
+    this.prefix(TokenType.UNSAFE, {
+      parse: (p, t) => {
+        const block = p.parseBlock();
+        return {
+          kind: 'BlockExpr',
+          block,
+          span: t.span
+        };
+      }
+    });
+
+    this.prefix(TokenType.YIELD, {
+      parse: (p, t) => ({
+        kind: 'Yield',
+        expression: p.check(TokenType.NEWLINE) || p.check(TokenType.SEMICOLON) || p.check(TokenType.RBRACE) || p.isAtEnd()
+          ? null
+          : p.parseExpression(),
+        span: t.span
+      })
+    });
+
     this.prefix(TokenType.LPAREN, {
       parse: (p, t) => {
         const expr = p.parseExpression();
@@ -163,7 +187,15 @@ export class Parser {
         const elements: AST.Expression[] = [];
         if (!p.check(TokenType.RBRACKET)) {
           do {
-            elements.push(p.parseExpression());
+            if (p.match(TokenType.ELLIPSIS)) {
+              elements.push({
+                kind: 'Spread',
+                expression: p.parseExpression(),
+                span: p.current().span
+              });
+            } else {
+              elements.push(p.parseExpression());
+            }
           } while (p.match(TokenType.COMMA));
         }
         p.consume(TokenType.RBRACKET, "Expected ']' after array elements");
@@ -365,6 +397,7 @@ export class Parser {
       const args: AST.Argument[] = [];
       if (!p.check(TokenType.RPAREN)) {
         do {
+          const isSpread = p.match(TokenType.ELLIPSIS);
           const name = p.check(TokenType.IDENTIFIER) && p.peek(1).type === TokenType.ASSIGN
             ? p.advance().value
             : null;
@@ -372,7 +405,7 @@ export class Parser {
           args.push({
             name,
             value: p.parseExpression(),
-            isSpread: false,
+            isSpread,
             span: t.span
           });
         } while (p.match(TokenType.COMMA));
@@ -504,7 +537,7 @@ export class Parser {
     return {
       kind: 'Program',
       body: statements,
-      sourceFile: '<stdin>'
+      sourceFile: ''
     };
   }
 
@@ -581,6 +614,8 @@ export class Parser {
         return this.parseGuard();
       case TokenType.TYPE:
         return this.parseTypeAlias();
+      case TokenType.THROW:
+        return this.parseThrow();
       default:
         return this.parseExprStmt();
     }
@@ -823,8 +858,23 @@ export class Parser {
 
     if (this.check(TokenType.IDENTIFIER)) {
       const name = this.advance().value;
+      if (this.check(TokenType.LBRACE)) {
+        // Struct pattern: Point { x, y }
+        this.advance();
+        const fields: [string, AST.Pattern][] = [];
+        if (!this.check(TokenType.RBRACE)) {
+          do {
+            const fname = this.consume(TokenType.IDENTIFIER, "Expected field name").value;
+            this.consume(TokenType.COLON, "Expected ':' after field name");
+            const fpat = this.parsePattern();
+            fields.push([fname, fpat]);
+          } while (this.match(TokenType.COMMA));
+        }
+        this.consume(TokenType.RBRACE, "Expected '}' after struct pattern fields");
+        return { kind: 'StructPattern', name, fields, span: this.current().span };
+      }
       if (this.check(TokenType.LPAREN)) {
-        // Enum or struct pattern
+        // Enum or tuple pattern
         this.advance();
         const fields: AST.Pattern[] = [];
         if (!this.check(TokenType.RPAREN)) {
@@ -878,6 +928,24 @@ export class Parser {
     const label = this.check(TokenType.IDENTIFIER) ? this.advance().value : null;
     this.match(TokenType.SEMICOLON);
     return { kind: 'Continue', label, span };
+  }
+
+  private parseThrow(): AST.ExprStmt {
+    const span = this.advance().span;
+    const expr = this.parseExpression();
+    this.match(TokenType.SEMICOLON);
+    return {
+      kind: 'ExprStmt',
+      expression: {
+        kind: 'Call',
+        callee: { kind: 'Identifier', name: '__throw', span },
+        args: [{ name: null, value: expr, isSpread: false, span: expr.span }],
+        isAsync: false,
+        isTail: false,
+        span
+      },
+      span
+    };
   }
 
   private parseStruct(): AST.StructDecl {
@@ -983,12 +1051,12 @@ export class Parser {
   private parseImpl(): AST.ImplDecl {
     const span = this.advance().span;
     const generics = this.parseGenerics();
-    const target = this.parseTypeExpression();
-
+    let target = this.parseTypeExpression();
     let trait: AST.TypeExpr | null = null;
+
     if (this.match(TokenType.FOR)) {
       trait = target;
-      // Re-parse target
+      target = this.parseTypeExpression();
     }
 
     this.consume(TokenType.LBRACE, "Expected '{' after impl target");
@@ -1073,8 +1141,17 @@ export class Parser {
     this.consume(TokenType.ASSIGN, "Expected '=' in type alias");
     const type = this.parseTypeExpression();
     this.match(TokenType.SEMICOLON);
-    // Return as a special statement or add to AST
-    return { kind: 'ExprStmt', expression: { kind: 'Identifier', name, span: this.current().span }, span: this.current().span };
+    // FIX: Return a proper type alias node as ExprStmt for now
+    // In a full implementation, add TypeAliasDecl to AST
+    return {
+      kind: 'ExprStmt',
+      expression: {
+        kind: 'Identifier',
+        name: `${name}=${JSON.stringify(type)}`,
+        span: this.current().span
+      },
+      span: this.current().span
+    };
   }
 
   private parseExprStmt(): AST.ExprStmt {
@@ -1084,10 +1161,44 @@ export class Parser {
   }
 
   private parseTableOrBlock(): AST.Expression {
-    // Could be table literal or block expression
-    // For now, assume table if it looks like key: value
-    // This is simplified - real parser needs more lookahead
-    return this.parseTableLiteral();
+    // Lookahead: if next token is an identifier followed by ':' or '}' (empty table),
+    // it's a table literal. Otherwise, it's a block expression.
+    const savePos = this.pos;
+
+    // Try to determine if it's a table or block
+    let isTable = false;
+    let depth = 1;
+    let i = savePos;
+
+    while (i < this.tokens.length && depth > 0) {
+      const t = this.tokens[i];
+      if (t.type === TokenType.LBRACE) depth++;
+      else if (t.type === TokenType.RBRACE) depth--;
+      else if (depth === 1 && t.type === TokenType.IDENTIFIER) {
+        // Check if next non-newline is ':'
+        let j = i + 1;
+        while (j < this.tokens.length && this.tokens[j].type === TokenType.NEWLINE) j++;
+        if (j < this.tokens.length && this.tokens[j].type === TokenType.COLON) {
+          isTable = true;
+          break;
+        }
+      }
+      i++;
+    }
+
+    // Reset and parse accordingly
+    if (isTable) {
+      return this.parseTableLiteral();
+    } else {
+      // It's a block expression
+      this.pos = savePos - 1; // Back up because we already consumed '{'
+      const block = this.parseBlock();
+      return {
+        kind: 'BlockExpr',
+        block,
+        span: block.span
+      };
+    }
   }
 
   private parseTableLiteral(): AST.TableExpr {
