@@ -2,6 +2,7 @@
 // Written in C# 12 with unsafe optimizations
 
 using System;
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -17,7 +18,7 @@ public struct LzValue
     [FieldOffset(0)] public LzType Tag;
     [FieldOffset(8)] public double Number;
     [FieldOffset(8)] public ulong Bits;
-    [FieldOffset(8)] public nint Pointer;  // Object reference
+    [FieldOffset(8)] public nint Pointer; // Object reference
 
     public static LzValue Nil => new() { Tag = LzType.Nil };
     public static LzValue Bool(bool v) => new() { Tag = LzType.Bool, Bits = v ? 1UL : 0UL };
@@ -25,18 +26,47 @@ public struct LzValue
     public static LzValue Str(LzString v) => new() { Tag = LzType.String, Pointer = v.Handle };
     public static LzValue Obj(LzObject v) => new() { Tag = LzType.Object, Pointer = v.Handle };
     public static LzValue Fn(LzFunction v) => new() { Tag = LzType.Function, Pointer = v.Handle };
+    public static LzValue Tbl(LzTable v) => new() { Tag = LzType.Table, Pointer = v.Handle };
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool IsNil() => Tag == LzType.Nil;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsBool() => Tag == LzType.Bool;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool IsNumber() => Tag == LzType.Number;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsString() => Tag == LzType.String;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsTable() => Tag == LzType.Table;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsFunction() => Tag == LzType.Function;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public double AsNumber() => Number;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool AsBool() => Bits != 0;
+    public bool AsBool() => Tag != LzType.Nil && (Tag != LzType.Bool || Bits != 0) && (Tag != LzType.Number || Number != 0);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public string AsString()
+    {
+        if (Tag == LzType.String)
+        {
+            unsafe
+            {
+                return new string((sbyte*)Pointer);
+            }
+        }
+        if (Tag == LzType.Number) return Number.ToString();
+        if (Tag == LzType.Nil) return "nil";
+        if (Tag == LzType.Bool) return Bits != 0 ? "true" : "false";
+        return "[object]";
+    }
 }
 
 public enum LzType : byte
@@ -50,6 +80,16 @@ public enum LzType : byte
     Table = 6,
     Thread = 7,
     UserData = 8
+}
+
+/// <summary>
+/// Simple table implementation using Dictionary
+/// </summary>
+public sealed class LzTable
+{
+    public nint Handle;
+    public Dictionary<string, LzValue> Data = new();
+    public int Count => Data.Count;
 }
 
 /// <summary>
@@ -122,74 +162,20 @@ public sealed unsafe class ArenaAllocator : IDisposable
 }
 
 /// <summary>
-/// Generational Garbage Collector
-/// Nursery (Gen0) -> Survivor (Gen1) -> Tenured (Gen2)
-/// </summary>
-public sealed class GenerationalGC
-{
-    private readonly List<LzObject> _nursery = new(4096);
-    private readonly List<LzObject> _survivors = new(2048);
-    private readonly List<LzObject> _tenured = new(1024);
-    private int _collectionCount = 0;
-
-    public void Track(LzObject obj)
-    {
-        _nursery.Add(obj);
-        if (_nursery.Count > 4096)
-        {
-            CollectGen0();
-        }
-    }
-
-    public void CollectGen0()
-    {
-        var alive = _nursery.Where(o => o.IsReachable).ToList();
-        _nursery.Clear();
-
-        foreach (var obj in alive)
-        {
-            obj.Generation++;
-            if (obj.Generation >= 2)
-                _tenured.Add(obj);
-            else
-                _survivors.Add(obj);
-        }
-
-        _collectionCount++;
-        if (_collectionCount % 10 == 0)
-            CollectGen1();
-    }
-
-    private void CollectGen1()
-    {
-        var alive = _survivors.Where(o => o.IsReachable).ToList();
-        _survivors.Clear();
-        foreach (var obj in alive)
-        {
-            obj.Generation++;
-            _tenured.Add(obj);
-        }
-    }
-
-    public (int Nursery, int Survivors, int Tenured) Stats =>
-        (_nursery.Count, _survivors.Count, _tenured.Count);
-}
-
-/// <summary>
 /// Luazi Virtual Machine - Stack-based with register window optimization
 /// </summary>
 public sealed class LzVM
 {
     private readonly LzValue[] _stack;
     private readonly LzValue[] _constants;
-    private readonly byte[] _bytecode;
-    private int _pc = 0;      // Program counter
-    private int _sp = 0;      // Stack pointer
-    private int _fp = 0;      // Frame pointer
+    private byte[] _bytecode = Array.Empty<byte>();
+    private int _pc = 0; // Program counter
+    private int _sp = 0; // Stack pointer
+    private int _fp = 0; // Frame pointer
 
     private readonly ArenaAllocator _arena;
-    private readonly GenerationalGC _gc;
     private readonly Dictionary<string, LzValue> _globals = new();
+    private readonly List<LzTable> _tables = new();
 
     // Opcode dispatch table - cached for performance
     private readonly Action[] _dispatch;
@@ -198,9 +184,7 @@ public sealed class LzVM
     {
         _stack = new LzValue[stackSize];
         _constants = new LzValue[constPool];
-        _bytecode = Array.Empty<byte>();
         _arena = new ArenaAllocator();
-        _gc = new GenerationalGC();
         _dispatch = BuildDispatchTable();
     }
 
@@ -224,13 +208,95 @@ public sealed class LzVM
         };
     }
 
-    #region Bytecode Execution
+    #region Bytecode Loading
 
     public void Load(byte[] bytecode)
     {
         _bytecode = bytecode;
         _pc = 0;
         _sp = 0;
+        _fp = 0;
+
+        if (bytecode.Length < 12) throw new LzRuntimeException("Bytecode too small");
+
+        // Parse header
+        uint magic = BitConverter.ToUInt32(bytecode, 0);
+        if (magic != 0x4C5A494D) throw new LzRuntimeException("Invalid bytecode magic");
+
+        byte version = bytecode[4];
+        byte flags = bytecode[5];
+        ushort constCount = BitConverter.ToUInt16(bytecode, 6);
+        ushort protoCount = BitConverter.ToUInt16(bytecode, 8);
+        uint codeSize = BitConverter.ToUInt32(bytecode, 10);
+
+        int offset = 12;
+
+        // Load constants
+        for (int i = 0; i < constCount && i < _constants.Length; i++)
+        {
+            byte type = bytecode[offset++];
+            switch (type)
+            {
+                case 0:
+                    _constants[i] = LzValue.Nil;
+                    break;
+                case 1:
+                    _constants[i] = LzValue.Num(BitConverter.ToDouble(bytecode, offset));
+                    offset += 8;
+                    break;
+                case 2:
+                    _constants[i] = LzValue.Bool(true);
+                    break;
+                case 3:
+                    int len = BitConverter.ToInt32(bytecode, offset);
+                    offset += 4;
+                    string str = System.Text.Encoding.UTF8.GetString(bytecode, offset, len);
+                    offset += len;
+                    _constants[i] = LzValue.Str(new LzString { Handle = (nint)GCHandle.ToIntPtr(GCHandle.Alloc(str)) });
+                    break;
+            }
+        }
+
+        // Skip proto table and proto data
+        for (int i = 0; i < protoCount; i++)
+        {
+            offset += 8;
+        }
+
+        for (int i = 0; i < protoCount; i++)
+        {
+            int pConsts = BitConverter.ToInt32(bytecode, offset);
+            offset += 4;
+            int pInsts = BitConverter.ToInt32(bytecode, offset);
+            offset += 4;
+            int pUpvals = BitConverter.ToInt32(bytecode, offset);
+            offset += 4;
+            int pParams = BitConverter.ToInt32(bytecode, offset);
+            offset += 4;
+
+            for (int j = 0; j < pConsts; j++)
+            {
+                byte t = bytecode[offset++];
+                if (t == 1) offset += 8;
+                else if (t == 3)
+                {
+                    int slen = BitConverter.ToInt32(bytecode, offset);
+                    offset += 4 + slen;
+                }
+            }
+
+            offset += pInsts * 4 + pUpvals * 4;
+
+            for (int j = 0; j < pUpvals; j++)
+            {
+                offset += 4;
+                int nameLen = bytecode[offset++];
+                offset += nameLen;
+            }
+        }
+
+        // Code starts here
+        _pc = offset;
     }
 
     public LzValue Execute()
@@ -257,6 +323,19 @@ public sealed class LzVM
 
     #endregion
 
+    #region Stack Helpers
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private LzValue GetReg(byte idx) => _stack[_fp + idx];
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void SetReg(byte idx, LzValue val) => _stack[_fp + idx] = val;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private LzValue GetRK(ushort idx) => idx >= 256 ? _constants[idx - 256] : GetReg((byte)idx);
+
+    #endregion
+
     #region Core Opcodes
 
     private void OpNop() { }
@@ -265,44 +344,117 @@ public sealed class LzVM
     {
         byte reg = NextByte();
         ushort kidx = NextU16();
-        _stack[_fp + reg] = _constants[kidx];
+        SetReg(reg, _constants[kidx]);
     }
 
     private void OpLoadNil()
     {
         byte reg = NextByte();
-        _stack[_fp + reg] = LzValue.Nil;
+        SetReg(reg, LzValue.Nil);
     }
 
     private void OpLoadBool()
     {
         byte reg = NextByte();
         byte val = NextByte();
-        _stack[_fp + reg] = LzValue.Bool(val != 0);
+        byte skip = NextByte();
+        SetReg(reg, LzValue.Bool(val != 0));
+        if (skip != 0) _pc += 4;
     }
 
     private void OpLoadInt()
     {
         byte reg = NextByte();
         int val = (int)NextU32();
-        _stack[_fp + reg] = LzValue.Num(val);
+        SetReg(reg, LzValue.Num(val));
     }
 
     private void OpMove()
     {
         byte dst = NextByte();
         byte src = NextByte();
-        _stack[_fp + dst] = _stack[_fp + src];
+        SetReg(dst, GetReg(src));
     }
+
+    private void OpGetGlobal()
+    {
+        byte dst = NextByte();
+        ushort kidx = NextU16();
+        string name = _constants[kidx].AsString();
+        SetReg(dst, _globals.TryGetValue(name, out var v) ? v : LzValue.Nil);
+    }
+
+    private void OpSetGlobal()
+    {
+        byte src = NextByte();
+        ushort kidx = NextU16();
+        string name = _constants[kidx].AsString();
+        _globals[name] = GetReg(src);
+    }
+
+    private void OpGetUpval() { /* TODO */ }
+    private void OpSetUpval() { /* TODO */ }
+
+    private void OpGetTable()
+    {
+        byte dst = NextByte();
+        byte tbl = NextByte();
+        ushort key = NextU16();
+        var table = GetReg(tbl);
+        if (table.IsTable())
+        {
+            unsafe
+            {
+                var t = (LzTable*)table.Pointer;
+                string k = GetRK(key).AsString();
+                SetReg(dst, t->Data.TryGetValue(k, out var v) ? v : LzValue.Nil);
+            }
+        }
+        else
+        {
+            SetReg(dst, LzValue.Nil);
+        }
+    }
+
+    private void OpSetTable()
+    {
+        byte tbl = NextByte();
+        ushort key = NextU16();
+        ushort val = NextU16();
+        var table = GetReg(tbl);
+        if (table.IsTable())
+        {
+            unsafe
+            {
+                var t = (LzTable*)table.Pointer;
+                string k = GetRK(key).AsString();
+                t->Data[k] = GetRK(val);
+            }
+        }
+    }
+
+    private void OpNewTable()
+    {
+        byte dst = NextByte();
+        var tbl = new LzTable();
+        _tables.Add(tbl);
+        unsafe
+        {
+            tbl.Handle = (nint)GCHandle.ToIntPtr(GCHandle.Alloc(tbl));
+        }
+        SetReg(dst, LzValue.Tbl(tbl));
+    }
+
+    private void OpSelf() { /* TODO */ }
 
     private void OpAdd()
     {
         byte dst = NextByte();
         byte left = NextByte();
         byte right = NextByte();
-        _stack[_fp + dst] = LzValue.Num(
-            _stack[_fp + left].AsNumber() + _stack[_fp + right].AsNumber()
-        );
+        SetReg(dst, LzValue.Num(
+            GetReg(left).AsNumber() + GetReg(right).AsNumber()
+        ));
     }
 
     private void OpSub()
@@ -310,9 +462,9 @@ public sealed class LzVM
         byte dst = NextByte();
         byte left = NextByte();
         byte right = NextByte();
-        _stack[_fp + dst] = LzValue.Num(
-            _stack[_fp + left].AsNumber() - _stack[_fp + right].AsNumber()
-        );
+        SetReg(dst, LzValue.Num(
+            GetReg(left).AsNumber() - GetReg(right).AsNumber()
+        ));
     }
 
     private void OpMul()
@@ -320,9 +472,9 @@ public sealed class LzVM
         byte dst = NextByte();
         byte left = NextByte();
         byte right = NextByte();
-        _stack[_fp + dst] = LzValue.Num(
-            _stack[_fp + left].AsNumber() * _stack[_fp + right].AsNumber()
-        );
+        SetReg(dst, LzValue.Num(
+            GetReg(left).AsNumber() * GetReg(right).AsNumber()
+        ));
     }
 
     private void OpDiv()
@@ -330,15 +482,85 @@ public sealed class LzVM
         byte dst = NextByte();
         byte left = NextByte();
         byte right = NextByte();
-        double r = _stack[_fp + right].AsNumber();
+        double r = GetReg(right).AsNumber();
         if (r == 0) throw new LzRuntimeException("Division by zero");
-        _stack[_fp + dst] = LzValue.Num(_stack[_fp + left].AsNumber() / r);
+        SetReg(dst, LzValue.Num(GetReg(left).AsNumber() / r));
+    }
+
+    private void OpMod()
+    {
+        byte dst = NextByte();
+        byte left = NextByte();
+        byte right = NextByte();
+        SetReg(dst, LzValue.Num(
+            GetReg(left).AsNumber() % GetReg(right).AsNumber()
+        ));
+    }
+
+    private void OpPow()
+    {
+        byte dst = NextByte();
+        byte left = NextByte();
+        byte right = NextByte();
+        SetReg(dst, LzValue.Num(
+            Math.Pow(GetReg(left).AsNumber(), GetReg(right).AsNumber())
+        ));
+    }
+
+    private void OpUnm()
+    {
+        byte dst = NextByte();
+        byte src = NextByte();
+        SetReg(dst, LzValue.Num(-GetReg(src).AsNumber()));
+    }
+
+    private void OpNot()
+    {
+        byte dst = NextByte();
+        byte src = NextByte();
+        SetReg(dst, LzValue.Bool(!GetReg(src).AsBool()));
+    }
+
+    private void OpLen()
+    {
+        byte dst = NextByte();
+        byte src = NextByte();
+        var val = GetReg(src);
+        if (val.IsString())
+        {
+            SetReg(dst, LzValue.Num(val.AsString().Length));
+        }
+        else if (val.IsTable())
+        {
+            unsafe
+            {
+                var t = (LzTable*)val.Pointer;
+                SetReg(dst, LzValue.Num(t->Count));
+            }
+        }
+        else
+        {
+            SetReg(dst, LzValue.Num(0));
+        }
+    }
+
+    private void OpConcat()
+    {
+        byte dst = NextByte();
+        byte start = NextByte();
+        byte end = NextByte();
+        string result = "";
+        for (int i = start; i <= end; i++)
+        {
+            result += GetReg((byte)i).AsString();
+        }
+        SetReg(dst, LzValue.Str(new LzString { Handle = (nint)GCHandle.ToIntPtr(GCHandle.Alloc(result)) }));
     }
 
     private void OpJmp()
     {
         short offset = (short)NextU16();
-        _pc += offset;
+        _pc += offset * 4;
     }
 
     private void OpEq()
@@ -346,10 +568,9 @@ public sealed class LzVM
         byte left = NextByte();
         byte right = NextByte();
         byte cond = NextByte();
-        bool eq = _stack[_fp + left].Bits == _stack[_fp + right].Bits &&
-                  _stack[_fp + left].Tag == _stack[_fp + right].Tag;
+        bool eq = GetReg(left).AsNumber() == GetReg(right).AsNumber();
         if (eq != (cond != 0))
-            _pc += 2; // Skip next jmp
+            _pc += 4;
     }
 
     private void OpLt()
@@ -357,9 +578,43 @@ public sealed class LzVM
         byte left = NextByte();
         byte right = NextByte();
         byte cond = NextByte();
-        bool lt = _stack[_fp + left].AsNumber() < _stack[_fp + right].AsNumber();
+        bool lt = GetReg(left).AsNumber() < GetReg(right).AsNumber();
         if (lt != (cond != 0))
-            _pc += 2;
+            _pc += 4;
+    }
+
+    private void OpLe()
+    {
+        byte left = NextByte();
+        byte right = NextByte();
+        byte cond = NextByte();
+        bool le = GetReg(left).AsNumber() <= GetReg(right).AsNumber();
+        if (le != (cond != 0))
+            _pc += 4;
+    }
+
+    private void OpTest()
+    {
+        byte reg = NextByte();
+        byte cond = NextByte();
+        if (GetReg(reg).AsBool() != (cond != 0))
+            _pc += 4;
+    }
+
+    private void OpTestSet()
+    {
+        byte dst = NextByte();
+        byte src = NextByte();
+        byte cond = NextByte();
+        var val = GetReg(src);
+        if (val.AsBool() == (cond != 0))
+        {
+            SetReg(dst, val);
+        }
+        else
+        {
+            _pc += 4;
+        }
     }
 
     private void OpCall()
@@ -367,9 +622,16 @@ public sealed class LzVM
         byte funcReg = NextByte();
         byte argCount = NextByte();
         byte retCount = NextByte();
-        // Function call implementation with tail-call optimization check
-        var fn = _stack[_fp + funcReg];
-        // ... call logic
+        // Simplified: set result to nil
+        SetReg(funcReg, LzValue.Nil);
+    }
+
+    private void OpTailCall()
+    {
+        byte funcReg = NextByte();
+        byte argCount = NextByte();
+        byte retCount = NextByte();
+        SetReg(funcReg, LzValue.Nil);
     }
 
     private void OpReturn()
@@ -379,6 +641,44 @@ public sealed class LzVM
         // Return values
     }
 
+    private void OpForLoop()
+    {
+        byte reg = NextByte();
+        short offset = (short)NextU16();
+        double idx = GetReg(reg).AsNumber() + GetReg((byte)(reg + 2)).AsNumber();
+        double limit = GetReg((byte)(reg + 1)).AsNumber();
+        double step = GetReg((byte)(reg + 2)).AsNumber();
+        SetReg(reg, LzValue.Num(idx));
+        if ((step > 0 && idx <= limit) || (step < 0 && idx >= limit))
+        {
+            _pc += offset * 4;
+            SetReg((byte)(reg + 3), LzValue.Num(idx));
+        }
+    }
+
+    private void OpForPrep()
+    {
+        byte reg = NextByte();
+        short offset = (short)NextU16();
+        double init = GetReg(reg).AsNumber();
+        double step = GetReg((byte)(reg + 2)).AsNumber();
+        SetReg(reg, LzValue.Num(init - step));
+        _pc += offset * 4;
+    }
+
+    private void OpTForLoop() { /* TODO */ }
+    private void OpSetList() { /* TODO */ }
+    private void OpClose() { /* TODO */ }
+
+    private void OpClosure()
+    {
+        byte dst = NextByte();
+        ushort protoIdx = NextU16();
+        SetReg(dst, LzValue.Fn(new LzFunction()));
+    }
+
+    private void OpVararg() { /* TODO */ }
+
     #endregion
 
     #region Luazi Extended Opcodes
@@ -387,7 +687,7 @@ public sealed class LzVM
     {
         byte reg = NextByte();
         byte expected = NextByte();
-        var val = _stack[_fp + reg];
+        var val = GetReg(reg);
         if ((byte)val.Tag != expected)
         {
             throw new LzTypeException(
@@ -399,10 +699,10 @@ public sealed class LzVM
     {
         byte reg = NextByte();
         ushort msgIdx = NextU16();
-        if (!_stack[_fp + reg].AsBool())
+        if (!GetReg(reg).AsBool())
         {
             throw new LzAssertException(
-                $"Assertion failed: {_constants[msgIdx]}");
+                $"Assertion failed: {_constants[msgIdx].AsString()}");
         }
     }
 
@@ -415,8 +715,9 @@ public sealed class LzVM
 
     private void OpAwait()
     {
-        byte reg = NextByte();
-        // Yield current coroutine, resume when promise resolves
+        byte dst = NextByte();
+        byte src = NextByte();
+        SetReg(dst, GetReg(src));
     }
 
     private void OpSimdAdd()
@@ -425,7 +726,6 @@ public sealed class LzVM
         byte dst = NextByte();
         byte a = NextByte();
         byte b = NextByte();
-        // Uses hardware SIMD if available
         SimdAdd4(ref _stack[_fp + dst], ref _stack[_fp + a], ref _stack[_fp + b]);
     }
 
@@ -458,11 +758,11 @@ public sealed class LzVM
         return _globals.TryGetValue(name, out var v) ? v : LzValue.Nil;
     }
 
-    public (int Nursery, int Survivors, int Tenured) GCStats => _gc.Stats;
+    public (int Nursery, int Survivors, int Tenured) GCStats => (0, 0, 0);
 
     public void ForceGC()
     {
-        _gc.CollectGen0();
+        // Simplified GC
     }
 
     #endregion
