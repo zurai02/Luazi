@@ -1,407 +1,704 @@
-// Luazi Standard Library - File System Module (fs)
-// Provides file I/O operations, directory traversal, and path manipulation
+import * as fs from "fs";
+import * as path from "path";
 
-export interface FsModule {
-  // File operations
-  readFile(path: string, encoding?: string): string | Uint8Array;
-  writeFile(path: string, data: string | Uint8Array, options?: WriteOptions): void;
-  appendFile(path: string, data: string | Uint8Array): void;
-  exists(path: string): boolean;
-  remove(path: string): void;
-  rename(oldPath: string, newPath: string): void;
-  copy(src: string, dest: string): void;
+/**
+ * Luazi Standard Library - File System Module
+ * Provides file system operations for Luazi scripts
+ */
 
-  // Directory operations
-  mkdir(path: string, recursive?: boolean): void;
-  rmdir(path: string, recursive?: boolean): void;
-  readdir(path: string): string[];
-  readdirSync(path: string): DirEntry[];
-  stat(path: string): FileStat;
-  lstat(path: string): FileStat;
+export default {
+    // =========================================================================
+    // FILE READING
+    // =========================================================================
 
-  // Watch operations
-  watch(path: string, callback: WatchCallback): WatchHandle;
-
-  // Path helpers
-  cwd(): string;
-  chdir(path: string): void;
-  tmpdir(): string;
-  homedir(): string;
-}
-
-export interface WriteOptions {
-  encoding?: string;
-  mode?: number;
-  flag?: string;
-}
-
-export interface DirEntry {
-  name: string;
-  isFile: boolean;
-  isDirectory: boolean;
-  isSymlink: boolean;
-  size: number;
-  mtime: number;
-}
-
-export interface FileStat {
-  size: number;
-  isFile: boolean;
-  isDirectory: boolean;
-  isSymlink: boolean;
-  mode: number;
-  uid: number;
-  gid: number;
-  atime: number;
-  mtime: number;
-  ctime: number;
-  birthtime: number;
-}
-
-export interface WatchCallback {
-  (event: 'change' | 'rename', filename: string): void;
-}
-
-export interface WatchHandle {
-  close(): void;
-}
-
-// ============================================================================
-// Node.js Implementation (primary)
-// ============================================================================
-
-class NodeFsModule implements FsModule {
-  private fs: any;
-  private path: any;
-  private watcherMap: Map<number, any> = new Map();
-  private watcherId: number = 0;
-
-  constructor() {
-    try {
-      this.fs = require('fs');
-      this.path = require('path');
-    } catch {
-      throw new Error('fs module requires Node.js environment');
-    }
-  }
-
-  readFile(path: string, encoding?: string): string | Uint8Array {
-    if (encoding) {
-      return this.fs.readFileSync(path, encoding);
-    }
-    return new Uint8Array(this.fs.readFileSync(path));
-  }
-
-  writeFile(path: string, data: string | Uint8Array, options?: WriteOptions): void {
-    const opts: any = { ...options };
-    if (data instanceof Uint8Array) {
-      this.fs.writeFileSync(path, Buffer.from(data), opts);
-    } else {
-      this.fs.writeFileSync(path, data, opts);
-    }
-  }
-
-  appendFile(path: string, data: string | Uint8Array): void {
-    if (data instanceof Uint8Array) {
-      this.fs.appendFileSync(path, Buffer.from(data));
-    } else {
-      this.fs.appendFileSync(path, data);
-    }
-  }
-
-  exists(path: string): boolean {
-    return this.fs.existsSync(path);
-  }
-
-  remove(path: string): void {
-    const stat = this.fs.statSync(path);
-    if (stat.isDirectory()) {
-      this.fs.rmSync(path, { recursive: true, force: true });
-    } else {
-      this.fs.unlinkSync(path);
-    }
-  }
-
-  rename(oldPath: string, newPath: string): void {
-    this.fs.renameSync(oldPath, newPath);
-  }
-
-  copy(src: string, dest: string): void {
-    this.fs.copyFileSync(src, dest);
-  }
-
-  mkdir(path: string, recursive?: boolean): void {
-    this.fs.mkdirSync(path, { recursive: recursive ?? false });
-  }
-
-  rmdir(path: string, recursive?: boolean): void {
-    if (recursive) {
-      this.fs.rmSync(path, { recursive: true, force: true });
-    } else {
-      this.fs.rmdirSync(path);
-    }
-  }
-
-  readdir(path: string): string[] {
-    return this.fs.readdirSync(path);
-  }
-
-  readdirSync(path: string): DirEntry[] {
-    const entries = this.fs.readdirSync(path, { withFileTypes: true });
-    return entries.map((entry: any) => ({
-      name: entry.name,
-      isFile: entry.isFile(),
-      isDirectory: entry.isDirectory(),
-      isSymlink: entry.isSymbolicLink(),
-      size: 0,
-      mtime: 0
-    }));
-  }
-
-  stat(path: string): FileStat {
-    const s = this.fs.statSync(path);
-    return this.toFileStat(s);
-  }
-
-  lstat(path: string): FileStat {
-    const s = this.fs.lstatSync(path);
-    return this.toFileStat(s);
-  }
-
-  private toFileStat(s: any): FileStat {
-    return {
-      size: s.size,
-      isFile: s.isFile(),
-      isDirectory: s.isDirectory(),
-      isSymlink: s.isSymbolicLink(),
-      mode: s.mode,
-      uid: s.uid,
-      gid: s.gid,
-      atime: s.atimeMs,
-      mtime: s.mtimeMs,
-      ctime: s.ctimeMs,
-      birthtime: s.birthtimeMs
-    };
-  }
-
-  watch(path: string, callback: WatchCallback): WatchHandle {
-    const watcher = this.fs.watch(path, (event: string, filename: string) => {
-      callback(event as 'change' | 'rename', filename);
-    });
-    const id = ++this.watcherId;
-    this.watcherMap.set(id, watcher);
-    return {
-      close: () => {
-        watcher.close();
-        this.watcherMap.delete(id);
-      }
-    };
-  }
-
-  cwd(): string {
-    return process.cwd();
-  }
-
-  chdir(path: string): void {
-    process.chdir(path);
-  }
-
-  tmpdir(): string {
-    return require('os').tmpdir();
-  }
-
-  homedir(): string {
-    return require('os').homedir();
-  }
-}
-
-// ============================================================================
-// Browser Implementation (limited)
-// ============================================================================
-
-class BrowserFsModule implements FsModule {
-  private db: IDBDatabase | null = null;
-  private dbName: string = 'luazi-fs';
-  private storeName: string = 'files';
-  private initialized: boolean = false;
-
-  private async init(): Promise<void> {
-    if (this.initialized) return;
-    return new Promise((resolve, reject) => {
-      const request = indexedDB.open(this.dbName, 1);
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => {
-        this.db = request.result;
-        this.initialized = true;
-        resolve();
-      };
-      request.onupgradeneeded = (event) => {
-        const db = (event.target as IDBOpenDBRequest).result;
-        if (!db.objectStoreNames.contains(this.storeName)) {
-          db.createObjectStore(this.storeName);
+    /**
+     * Read a text file synchronously
+     */
+    readFile: (filePath: string): string => {
+        try {
+            return fs.readFileSync(filePath, "utf8");
+        } catch (e: any) {
+            throw new Error(`Failed to read file: ${filePath} - ${e.message}`);
         }
-      };
-    });
-  }
+    },
 
-  private async getStore(mode: IDBTransactionMode): Promise<IDBObjectStore> {
-    await this.init();
-    const transaction = this.db!.transaction([this.storeName], mode);
-    return transaction.objectStore(this.storeName);
-  }
-
-  readFile(path: string, encoding?: string): string | Uint8Array {
-    throw new Error('Browser fs.readFile is async-only. Use readFileAsync instead.');
-  }
-
-  async readFileAsync(path: string, encoding?: string): Promise<string | Uint8Array> {
-    const store = await this.getStore('readonly');
-    return new Promise((resolve, reject) => {
-      const request = store.get(path);
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => {
-        const data = request.result;
-        if (data === undefined) {
-          reject(new Error(`ENOENT: no such file or directory, open '${path}'`));
-        } else if (encoding) {
-          resolve(new TextDecoder(encoding).decode(data));
-        } else {
-          resolve(new Uint8Array(data));
+    /**
+     * Alias for readFile
+     */
+    readFileSync: (filePath: string): string => {
+        try {
+            return fs.readFileSync(filePath, "utf8");
+        } catch (e: any) {
+            throw new Error(`Failed to read file: ${filePath} - ${e.message}`);
         }
-      };
-    });
-  }
+    },
 
-  writeFile(path: string, data: string | Uint8Array, _options?: WriteOptions): void {
-    throw new Error('Browser fs.writeFile is async-only. Use writeFileAsync instead.');
-  }
+    /**
+     * Read a file as raw bytes (Uint8Array)
+     */
+    readBytes: (filePath: string): Uint8Array => {
+        try {
+            return fs.readFileSync(filePath);
+        } catch (e: any) {
+            throw new Error(`Failed to read file as bytes: ${filePath} - ${e.message}`);
+        }
+    },
 
-  async writeFileAsync(path: string, data: string | Uint8Array, _options?: WriteOptions): Promise<void> {
-    const store = await this.getStore('readwrite');
-    return new Promise((resolve, reject) => {
-      let buffer: ArrayBuffer;
-      if (typeof data === 'string') {
-        buffer = new TextEncoder().encode(data).buffer;
-      } else {
-        buffer = data.buffer;
-      }
-      const request = store.put(buffer, path);
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve();
-    });
-  }
+    /**
+     * Read a file as a Buffer
+     */
+    readBuffer: (filePath: string): Buffer => {
+        try {
+            return fs.readFileSync(filePath);
+        } catch (e: any) {
+            throw new Error(`Failed to read file as buffer: ${filePath} - ${e.message}`);
+        }
+    },
 
-  appendFile(path: string, data: string | Uint8Array): void {
-    throw new Error('Browser fs.appendFile not implemented');
-  }
+    /**
+     * Read a JSON file and parse it
+     */
+    readJson: (filePath: string): any => {
+        try {
+            const content = fs.readFileSync(filePath, "utf8");
+            return JSON.parse(content);
+        } catch (e: any) {
+            throw new Error(`Failed to read JSON file: ${filePath} - ${e.message}`);
+        }
+    },
 
-  exists(path: string): boolean {
-    throw new Error('Browser fs.exists is async-only. Use existsAsync instead.');
-  }
+    /**
+     * Read file line by line
+     */
+    readLines: (filePath: string): string[] => {
+        try {
+            const content = fs.readFileSync(filePath, "utf8");
+            return content.split(/\r?\n/);
+        } catch (e: any) {
+            throw new Error(`Failed to read lines from: ${filePath} - ${e.message}`);
+        }
+    },
 
-  async existsAsync(path: string): Promise<boolean> {
-    const store = await this.getStore('readonly');
-    return new Promise((resolve, reject) => {
-      const request = store.get(path);
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve(request.result !== undefined);
-    });
-  }
+    // =========================================================================
+    // FILE WRITING
+    // =========================================================================
 
-  remove(path: string): void {
-    throw new Error('Browser fs.remove is async-only. Use removeAsync instead.');
-  }
+    /**
+     * Write text to a file synchronously
+     */
+    writeFile: (filePath: string, data: string): void => {
+        try {
+            fs.writeFileSync(filePath, data, "utf8");
+        } catch (e: any) {
+            throw new Error(`Failed to write file: ${filePath} - ${e.message}`);
+        }
+    },
 
-  async removeAsync(path: string): Promise<void> {
-    const store = await this.getStore('readwrite');
-    return new Promise((resolve, reject) => {
-      const request = store.delete(path);
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve();
-    });
-  }
+    /**
+     * Alias for writeFile
+     */
+    writeFileSync: (filePath: string, data: string): void => {
+        try {
+            fs.writeFileSync(filePath, data, "utf8");
+        } catch (e: any) {
+            throw new Error(`Failed to write file: ${filePath} - ${e.message}`);
+        }
+    },
 
-  rename(_oldPath: string, _newPath: string): void {
-    throw new Error('Browser fs.rename not implemented');
-  }
+    /**
+     * Write raw bytes to a file
+     */
+    writeBytes: (filePath: string, data: Uint8Array): void => {
+        try {
+            fs.writeFileSync(filePath, data);
+        } catch (e: any) {
+            throw new Error(`Failed to write bytes to file: ${filePath} - ${e.message}`);
+        }
+    },
 
-  copy(_src: string, _dest: string): void {
-    throw new Error('Browser fs.copy not implemented');
-  }
+    /**
+     * Write a Buffer to a file
+     */
+    writeBuffer: (filePath: string, data: Buffer): void => {
+        try {
+            fs.writeFileSync(filePath, data);
+        } catch (e: any) {
+            throw new Error(`Failed to write buffer to file: ${filePath} - ${e.message}`);
+        }
+    },
 
-  mkdir(_path: string, _recursive?: boolean): void {
-    throw new Error('Browser fs.mkdir not implemented');
-  }
+    /**
+     * Write an object as JSON to a file
+     */
+    writeJson: (filePath: string, data: any, indent: number = 2): void => {
+        try {
+            fs.writeFileSync(filePath, JSON.stringify(data, null, indent), "utf8");
+        } catch (e: any) {
+            throw new Error(`Failed to write JSON file: ${filePath} - ${e.message}`);
+        }
+    },
 
-  rmdir(_path: string, _recursive?: boolean): void {
-    throw new Error('Browser fs.rmdir not implemented');
-  }
+    /**
+     * Append text to a file
+     */
+    appendFile: (filePath: string, data: string): void => {
+        try {
+            fs.appendFileSync(filePath, data, "utf8");
+        } catch (e: any) {
+            throw new Error(`Failed to append to file: ${filePath} - ${e.message}`);
+        }
+    },
 
-  readdir(_path: string): string[] {
-    throw new Error('Browser fs.readdir is async-only. Use readdirAsync instead.');
-  }
+    /**
+     * Append bytes to a file
+     */
+    appendBytes: (filePath: string, data: Uint8Array): void => {
+        try {
+            fs.appendFileSync(filePath, data);
+        } catch (e: any) {
+            throw new Error(`Failed to append bytes to file: ${filePath} - ${e.message}`);
+        }
+    },
 
-  async readdirAsync(_path: string): Promise<string[]> {
-    const store = await this.getStore('readonly');
-    return new Promise((resolve, reject) => {
-      const request = store.getAllKeys();
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve(request.result as string[]);
-    });
-  }
+    // =========================================================================
+    // DIRECTORY OPERATIONS
+    // =========================================================================
 
-  readdirSync(_path: string): DirEntry[] {
-    throw new Error('Browser fs.readdirSync not implemented');
-  }
+    /**
+     * Create a directory
+     */
+    mkdir: (dirPath: string, recursive?: boolean): void => {
+        try {
+            fs.mkdirSync(dirPath, { recursive: recursive ?? false });
+        } catch (e: any) {
+            throw new Error(`Failed to create directory: ${dirPath} - ${e.message}`);
+        }
+    },
 
-  stat(_path: string): FileStat {
-    throw new Error('Browser fs.stat not implemented');
-  }
+    /**
+     * Alias for mkdir
+     */
+    mkdirSync: (dirPath: string, recursive?: boolean): void => {
+        try {
+            fs.mkdirSync(dirPath, { recursive: recursive ?? false });
+        } catch (e: any) {
+            throw new Error(`Failed to create directory: ${dirPath} - ${e.message}`);
+        }
+    },
 
-  lstat(_path: string): FileStat {
-    throw new Error('Browser fs.lstat not implemented');
-  }
+    /**
+     * Ensure a directory exists (create if not exists)
+     */
+    ensureDir: (dirPath: string): void => {
+        try {
+            if (!fs.existsSync(dirPath)) {
+                fs.mkdirSync(dirPath, { recursive: true });
+            }
+        } catch (e: any) {
+            throw new Error(`Failed to ensure directory: ${dirPath} - ${e.message}`);
+        }
+    },
 
-  watch(_path: string, _callback: WatchCallback): WatchHandle {
-    throw new Error('Browser fs.watch not implemented');
-  }
+    /**
+     * Remove a directory
+     */
+    removeDir: (dirPath: string, recursive?: boolean): void => {
+        try {
+            fs.rmSync(dirPath, { recursive: recursive ?? false, force: true });
+        } catch (e: any) {
+            throw new Error(`Failed to remove directory: ${dirPath} - ${e.message}`);
+        }
+    },
 
-  cwd(): string {
-    return '/';
-  }
+    /**
+     * Remove a directory and all its contents
+     */
+    removeDirRecursive: (dirPath: string): void => {
+        try {
+            fs.rmSync(dirPath, { recursive: true, force: true });
+        } catch (e: any) {
+            throw new Error(`Failed to remove directory recursively: ${dirPath} - ${e.message}`);
+        }
+    },
 
-  chdir(_path: string): void {
-    throw new Error('Browser fs.chdir not implemented');
-  }
+    /**
+     * Read directory contents
+     */
+    readdirSync: (dirPath: string): Array<{ name: string; isDirectory: boolean; isFile: boolean }> => {
+        try {
+            return fs.readdirSync(dirPath, { withFileTypes: true }).map((dirent) => ({
+                name: dirent.name,
+                isDirectory: dirent.isDirectory(),
+                isFile: dirent.isFile(),
+            }));
+        } catch (e: any) {
+            throw new Error(`Failed to read directory: ${dirPath} - ${e.message}`);
+        }
+    },
 
-  tmpdir(): string {
-    return '/tmp';
-  }
+    /**
+     * Read directory contents (names only)
+     */
+    readdir: (dirPath: string): string[] => {
+        try {
+            return fs.readdirSync(dirPath);
+        } catch (e: any) {
+            throw new Error(`Failed to read directory: ${dirPath} - ${e.message}`);
+        }
+    },
 
-  homedir(): string {
-    return '/home';
-  }
-}
+    // =========================================================================
+    // FILE OPERATIONS
+    // =========================================================================
 
-// ============================================================================
-// Factory
-// ============================================================================
+    /**
+     * Check if a file or directory exists
+     */
+    exists: (filePath: string): boolean => {
+        return fs.existsSync(filePath);
+    },
 
-export function createFsModule(): FsModule {
-  if (typeof process !== 'undefined' && process.versions?.node) {
-    return new NodeFsModule();
-  }
-  return new BrowserFsModule();
-}
+    /**
+     * Check if a path is a file
+     */
+    isFile: (filePath: string): boolean => {
+        try {
+            return fs.statSync(filePath).isFile();
+        } catch {
+            return false;
+        }
+    },
 
-// Singleton
-let defaultFs: FsModule | null = null;
-export function getFs(): FsModule {
-  if (!defaultFs) {
-    defaultFs = createFsModule();
-  }
-  return defaultFs;
-}
+    /**
+     * Check if a path is a directory
+     */
+    isDirectory: (filePath: string): boolean => {
+        try {
+            return fs.statSync(filePath).isDirectory();
+        } catch {
+            return false;
+        }
+    },
 
-// Default export for convenience
-export default getFs();
+    /**
+     * Get file statistics
+     */
+    stat: (filePath: string): { size: number; mtime: Date; ctime: Date; isDirectory: boolean; isFile: boolean } => {
+        try {
+            const stats = fs.statSync(filePath);
+            return {
+                size: stats.size,
+                mtime: stats.mtime,
+                ctime: stats.ctime,
+                isDirectory: stats.isDirectory(),
+                isFile: stats.isFile(),
+            };
+        } catch (e: any) {
+            throw new Error(`Failed to stat file: ${filePath} - ${e.message}`);
+        }
+    },
+
+    /**
+     * Get file size in bytes
+     */
+    size: (filePath: string): number => {
+        try {
+            return fs.statSync(filePath).size;
+        } catch (e: any) {
+            throw new Error(`Failed to get file size: ${filePath} - ${e.message}`);
+        }
+    },
+
+    /**
+     * Copy a file
+     */
+    copy: (src: string, dest: string): void => {
+        try {
+            fs.copyFileSync(src, dest);
+        } catch (e: any) {
+            throw new Error(`Failed to copy file from ${src} to ${dest} - ${e.message}`);
+        }
+    },
+
+    /**
+     * Copy a file with directory creation
+     */
+    copyFile: (src: string, dest: string): void => {
+        try {
+            const destDir = path.dirname(dest);
+            if (!fs.existsSync(destDir)) {
+                fs.mkdirSync(destDir, { recursive: true });
+            }
+            fs.copyFileSync(src, dest);
+        } catch (e: any) {
+            throw new Error(`Failed to copy file from ${src} to ${dest} - ${e.message}`);
+        }
+    },
+
+    /**
+     * Rename/move a file
+     */
+    rename: (oldPath: string, newPath: string): void => {
+        try {
+            fs.renameSync(oldPath, newPath);
+        } catch (e: any) {
+            throw new Error(`Failed to rename file from ${oldPath} to ${newPath} - ${e.message}`);
+        }
+    },
+
+    /**
+     * Move a file (alias for rename with directory creation)
+     */
+    move: (src: string, dest: string): void => {
+        try {
+            const destDir = path.dirname(dest);
+            if (!fs.existsSync(destDir)) {
+                fs.mkdirSync(destDir, { recursive: true });
+            }
+            fs.renameSync(src, dest);
+        } catch (e: any) {
+            throw new Error(`Failed to move file from ${src} to ${dest} - ${e.message}`);
+        }
+    },
+
+    /**
+     * Remove/delete a file
+     */
+    remove: (filePath: string): void => {
+        try {
+            fs.unlinkSync(filePath);
+        } catch (e: any) {
+            throw new Error(`Failed to remove file: ${filePath} - ${e.message}`);
+        }
+    },
+
+    /**
+     * Delete a file (alias for remove)
+     */
+    delete: (filePath: string): void => {
+        try {
+            fs.unlinkSync(filePath);
+        } catch (e: any) {
+            throw new Error(`Failed to delete file: ${filePath} - ${e.message}`);
+        }
+    },
+
+    /**
+     * Create an empty file
+     */
+    touch: (filePath: string): void => {
+        try {
+            if (!fs.existsSync(filePath)) {
+                fs.writeFileSync(filePath, "");
+            } else {
+                const now = new Date();
+                fs.utimesSync(filePath, now, now);
+            }
+        } catch (e: any) {
+            throw new Error(`Failed to touch file: ${filePath} - ${e.message}`);
+        }
+    },
+
+    /**
+     * Create a temporary file
+     */
+    tempFile: (prefix: string = "tmp", suffix: string = ""): string => {
+        const tmpDir = require("os").tmpdir();
+        const name = `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}${suffix}`;
+        const filePath = path.join(tmpDir, name);
+        fs.writeFileSync(filePath, "");
+        return filePath;
+    },
+
+    /**
+     * Create a temporary directory
+     */
+    tempDir: (prefix: string = "tmp"): string => {
+        const tmpDir = require("os").tmpdir();
+        const name = `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const dirPath = path.join(tmpDir, name);
+        fs.mkdirSync(dirPath, { recursive: true });
+        return dirPath;
+    },
+
+    // =========================================================================
+    // ADVANCED OPERATIONS
+    // =========================================================================
+
+    /**
+     * Walk a directory recursively and return all file paths
+     */
+    walk: (dirPath: string): string[] => {
+        const results: string[] = [];
+
+        function walkDir(currentPath: string) {
+            const entries = fs.readdirSync(currentPath, { withFileTypes: true });
+            for (const entry of entries) {
+                const fullPath = path.join(currentPath, entry.name);
+                if (entry.isDirectory()) {
+                    walkDir(fullPath);
+                } else {
+                    results.push(fullPath);
+                }
+            }
+        }
+
+        try {
+            walkDir(dirPath);
+        } catch (e: any) {
+            throw new Error(`Failed to walk directory: ${dirPath} - ${e.message}`);
+        }
+        return results;
+    },
+
+    /**
+     * Walk a directory recursively and return all paths (files and dirs)
+     */
+    walkAll: (dirPath: string): string[] => {
+        const results: string[] = [];
+
+        function walkDir(currentPath: string) {
+            results.push(currentPath);
+            const entries = fs.readdirSync(currentPath, { withFileTypes: true });
+            for (const entry of entries) {
+                const fullPath = path.join(currentPath, entry.name);
+                if (entry.isDirectory()) {
+                    walkDir(fullPath);
+                } else {
+                    results.push(fullPath);
+                }
+            }
+        }
+
+        try {
+            walkDir(dirPath);
+        } catch (e: any) {
+            throw new Error(`Failed to walk directory: ${dirPath} - ${e.message}`);
+        }
+        return results;
+    },
+
+    /**
+     * Find files matching a glob pattern
+     */
+    glob: (pattern: string, dirPath: string): string[] => {
+        const results: string[] = [];
+
+        // Convert glob pattern to regex
+        const regex = new RegExp(
+            "^" +
+            pattern
+                .replace(/\/g, "\\")
+                .replace(/\.\*/g, "\.")
+                .replace(/\*\*\//g, "(?:.*\/)?")
+                .replace(/\*/g, "[^\/]*")
+                .replace(/\?/g, ".")
+                .replace(/\./g, "\.")
+            + "$"
+        );
+
+        function walk(currentPath: string) {
+            const entries = fs.readdirSync(currentPath, { withFileTypes: true });
+            for (const entry of entries) {
+                const fullPath = path.join(currentPath, entry.name);
+                const relPath = path.relative(dirPath, fullPath);
+                if (entry.isDirectory()) {
+                    walk(fullPath);
+                } else if (regex.test(relPath) || regex.test(entry.name)) {
+                    results.push(fullPath);
+                }
+            }
+        }
+
+        try {
+            if (fs.existsSync(dirPath)) {
+                walk(dirPath);
+            }
+        } catch (e: any) {
+            throw new Error(`Failed to glob pattern ${pattern} in ${dirPath} - ${e.message}`);
+        }
+        return results;
+    },
+
+    /**
+     * Find files by extension
+     */
+    findByExt: (dirPath: string, ext: string): string[] => {
+        const results: string[] = [];
+        const dotExt = ext.startsWith(".") ? ext : `.${ext}`;
+
+        function walk(currentPath: string) {
+            const entries = fs.readdirSync(currentPath, { withFileTypes: true });
+            for (const entry of entries) {
+                const fullPath = path.join(currentPath, entry.name);
+                if (entry.isDirectory()) {
+                    walk(fullPath);
+                } else if (entry.name.endsWith(dotExt)) {
+                    results.push(fullPath);
+                }
+            }
+        }
+
+        try {
+            if (fs.existsSync(dirPath)) {
+                walk(dirPath);
+            }
+        } catch (e: any) {
+            throw new Error(`Failed to find files by extension ${ext} in ${dirPath} - ${e.message}`);
+        }
+        return results;
+    },
+
+    /**
+     * Copy a directory recursively
+     */
+    copyDir: (src: string, dest: string): void => {
+        try {
+            if (!fs.existsSync(dest)) {
+                fs.mkdirSync(dest, { recursive: true });
+            }
+
+            const entries = fs.readdirSync(src, { withFileTypes: true });
+            for (const entry of entries) {
+                const srcPath = path.join(src, entry.name);
+                const destPath = path.join(dest, entry.name);
+                if (entry.isDirectory()) {
+                    fs.mkdirSync(destPath, { recursive: true });
+                    fs.copyDir(srcPath, destPath);
+                } else {
+                    fs.copyFileSync(srcPath, destPath);
+                }
+            }
+        } catch (e: any) {
+            throw new Error(`Failed to copy directory from ${src} to ${dest} - ${e.message}`);
+        }
+    },
+
+    /**
+     * Empty a directory (remove all contents but keep the directory)
+     */
+    emptyDir: (dirPath: string): void => {
+        try {
+            const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+            for (const entry of entries) {
+                const fullPath = path.join(dirPath, entry.name);
+                if (entry.isDirectory()) {
+                    fs.rmSync(fullPath, { recursive: true, force: true });
+                } else {
+                    fs.unlinkSync(fullPath);
+                }
+            }
+        } catch (e: any) {
+            throw new Error(`Failed to empty directory: ${dirPath} - ${e.message}`);
+        }
+    },
+
+    /**
+     * Watch a file for changes
+     */
+    watch: (filePath: string, callback: (event: string, filename: string) => void): { close: () => void } => {
+        try {
+            const watcher = fs.watch(filePath, callback);
+            return {
+                close: () => watcher.close(),
+            };
+        } catch (e: any) {
+            throw new Error(`Failed to watch file: ${filePath} - ${e.message}`);
+        }
+    },
+
+    /**
+     * Get file creation time
+     */
+    created: (filePath: string): Date => {
+        try {
+            return fs.statSync(filePath).birthtime;
+        } catch (e: any) {
+            throw new Error(`Failed to get creation time: ${filePath} - ${e.message}`);
+        }
+    },
+
+    /**
+     * Get file modification time
+     */
+    modified: (filePath: string): Date => {
+        try {
+            return fs.statSync(filePath).mtime;
+        } catch (e: any) {
+            throw new Error(`Failed to get modification time: ${filePath} - ${e.message}`);
+        }
+    },
+
+    /**
+     * Check if a file is older than a given age (in milliseconds)
+     */
+    isOlderThan: (filePath: string, ageMs: number): boolean => {
+        try {
+            const mtime = fs.statSync(filePath).mtime.getTime();
+            return Date.now() - mtime > ageMs;
+        } catch (e: any) {
+            throw new Error(`Failed to check file age: ${filePath} - ${e.message}`);
+        }
+    },
+
+    /**
+     * Get disk usage information
+     */
+    diskUsage: (filePath: string): { total: number; free: number; used: number } => {
+        try {
+            const stats = require("fs").statSync(filePath);
+            // Note: This is a simplified version. Real disk usage requires platform-specific code
+            return {
+                total: 0,
+                free: 0,
+                used: 0,
+            };
+        } catch (e: any) {
+            throw new Error(`Failed to get disk usage: ${filePath} - ${e.message}`);
+        }
+    },
+
+    /**
+     * Create a symbolic link
+     */
+    symlink: (target: string, linkPath: string): void => {
+        try {
+            fs.symlinkSync(target, linkPath);
+        } catch (e: any) {
+            throw new Error(`Failed to create symlink: ${linkPath} -> ${target} - ${e.message}`);
+        }
+    },
+
+    /**
+     * Read a symbolic link
+     */
+    readlink: (linkPath: string): string => {
+        try {
+            return fs.readlinkSync(linkPath);
+        } catch (e: any) {
+            throw new Error(`Failed to read symlink: ${linkPath} - ${e.message}`);
+        }
+    },
+
+    /**
+     * Change file permissions
+     */
+    chmod: (filePath: string, mode: number): void => {
+        try {
+            fs.chmodSync(filePath, mode);
+        } catch (e: any) {
+            throw new Error(`Failed to chmod: ${filePath} - ${e.message}`);
+        }
+    },
+
+    /**
+     * Get file permissions
+     */
+    getMode: (filePath: string): number => {
+        try {
+            return fs.statSync(filePath).mode;
+        } catch (e: any) {
+            throw new Error(`Failed to get mode: ${filePath} - ${e.message}`);
+        }
+    },
+};
