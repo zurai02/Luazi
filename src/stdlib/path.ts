@@ -1,344 +1,283 @@
-// Luazi Standard Library - Path Module
-// Cross-platform path manipulation utilities
+import * as path from "path";
 
-export interface PathModule {
-  join(...paths: string[]): string;
-  resolve(...paths: string[]): string;
-  normalize(path: string): string;
-  dirname(path: string): string;
-  basename(path: string, ext?: string): string;
-  extname(path: string): string;
-  parse(path: string): PathObject;
-  format(pathObj: PathObject): string;
-  isAbsolute(path: string): boolean;
-  relative(from: string, to: string): string;
-  sep: string;
-  delimiter: string;
-  posix: PathModule;
-  win32: PathModule;
-  toNamespacedPath(path: string): string;
-  matchesGlob(path: string, pattern: string): boolean;
-}
+/**
+ * Luazi Standard Library - Path Module
+ * Provides path manipulation utilities for Luazi scripts
+ */
 
-export interface PathObject {
-  root: string;
-  dir: string;
-  base: string;
-  ext: string;
-  name: string;
-}
+export default {
+    // =========================================================================
+    // PATH CONSTRUCTION
+    // =========================================================================
 
-class PosixPath implements PathModule {
-  sep = '/';
-  delimiter = ':';
-  private _posix: PathModule = this;
-  private _win32: PathModule | null = null;
+    /**
+     * Join multiple path segments together
+     */
+    join: (...paths: string[]): string => {
+        return path.join(...paths);
+    },
 
-  get posix(): PathModule { return this._posix; }
-  get win32(): PathModule {
-    if (!this._win32) this._win32 = new Win32Path();
-    return this._win32;
-  }
+    /**
+     * Resolve a path to an absolute path
+     */
+    resolve: (...paths: string[]): string => {
+        return path.resolve(...paths);
+    },
 
-  join(...paths: string[]): string {
-    if (paths.length === 0) return '.';
-    let joined = '';
-    for (const segment of paths) {
-      if (!segment) continue;
-      if (!joined) { joined = segment; }
-      else if (joined.endsWith('/') && segment.startsWith('/')) {
-        joined += segment.slice(1);
-      } else if (!joined.endsWith('/') && !segment.startsWith('/')) {
-        joined += '/' + segment;
-      } else {
-        joined += segment;
-      }
-    }
-    return joined || '.';
-  }
+    /**
+     * Get the directory name of a path
+     */
+    dirname: (filePath: string): string => {
+        return path.dirname(filePath);
+    },
 
-  resolve(...paths: string[]): string {
-    let resolved = '';
-    let isAbsolute = false;
-    for (let i = paths.length - 1; i >= 0; i--) {
-      const p = paths[i];
-      if (!p) continue;
-      resolved = p + (resolved ? '/' + resolved : '');
-      if (p.startsWith('/')) { isAbsolute = true; break; }
-    }
-    if (!isAbsolute) resolved = this.join(this.getCwd(), resolved);
-    return this.normalize(resolved);
-  }
-
-  normalize(path: string): string {
-    if (!path) return '.';
-    const isAbsolute = path.startsWith('/');
-    const trailingSlash = path.endsWith('/') && path.length > 1;
-    const parts = path.split('/');
-    const normalized: string[] = [];
-    for (const part of parts) {
-      if (!part || part === '.') continue;
-      if (part === '..') {
-        if (normalized.length > 0 && normalized[normalized.length - 1] !== '..') {
-          normalized.pop();
-        } else if (!isAbsolute) {
-          normalized.push('..');
+    /**
+     * Get the base name of a path (filename with extension)
+     */
+    basename: (filePath: string, ext?: string): string => {
+        if (ext) {
+            return path.basename(filePath, ext);
         }
-      } else {
-        normalized.push(part);
-      }
-    }
-    let result = normalized.join('/');
-    if (isAbsolute) result = '/' + result;
-    if (trailingSlash && !result.endsWith('/')) result += '/';
-    return result || '.';
-  }
+        return path.basename(filePath);
+    },
 
-  dirname(path: string): string {
-    if (!path) return '.';
-    let end = path.length - 1;
-    while (end > 0 && path[end] === '/') end--;
-    const lastSlash = path.lastIndexOf('/', end);
-    if (lastSlash === -1) return '.';
-    if (lastSlash === 0) return '/';
-    return path.slice(0, lastSlash);
-  }
+    /**
+     * Get the file extension
+     */
+    extname: (filePath: string): string => {
+        return path.extname(filePath);
+    },
 
-  basename(path: string, ext?: string): string {
-    if (!path) return '';
-    let end = path.length;
-    while (end > 1 && path[end - 1] === '/') end--;
-    const trimmed = path.slice(0, end);
-    const lastSlash = trimmed.lastIndexOf('/');
-    let base = lastSlash === -1 ? trimmed : trimmed.slice(lastSlash + 1);
-    if (ext && base.endsWith(ext)) base = base.slice(0, -ext.length);
-    return base;
-  }
+    /**
+     * Get the relative path from one path to another
+     */
+    relative: (from: string, to: string): string => {
+        return path.relative(from, to);
+    },
 
-  extname(path: string): string {
-    const base = this.basename(path);
-    const lastDot = base.lastIndexOf('.');
-    if (lastDot <= 0) return '';
-    return base.slice(lastDot);
-  }
+    /**
+     * Check if a path is absolute
+     */
+    isAbsolute: (filePath: string): boolean => {
+        return path.isAbsolute(filePath);
+    },
 
-  parse(path: string): PathObject {
-    const root = path.startsWith('/') ? '/' : '';
-    const dir = this.dirname(path);
-    const base = this.basename(path);
-    const ext = this.extname(path);
-    const name = base.slice(0, base.length - ext.length);
-    return { root, dir, base, ext, name };
-  }
+    /**
+     * Normalize a path (resolve . and .. segments)
+     */
+    normalize: (filePath: string): string => {
+        return path.normalize(filePath);
+    },
 
-  format(pathObj: PathObject): string {
-    let path = pathObj.root || '';
-    if (pathObj.dir && pathObj.dir !== '.') {
-      path += pathObj.dir;
-      if (!path.endsWith('/')) path += '/';
-    }
-    path += pathObj.base || (pathObj.name + pathObj.ext);
-    return path;
-  }
+    // =========================================================================
+    // PATH INFORMATION
+    // =========================================================================
 
-  isAbsolute(path: string): boolean {
-    return path.startsWith('/');
-  }
+    /**
+     * Get the OS-specific path separator
+     */
+    sep: (): string => {
+        return path.sep;
+    },
 
-  relative(from: string, to: string): string {
-    const fromParts = this.normalize(from).split('/').filter(p => p);
-    const toParts = this.normalize(to).split('/').filter(p => p);
-    let common = 0;
-    while (common < fromParts.length && common < toParts.length &&
-           fromParts[common] === toParts[common]) common++;
-    const up = fromParts.length - common;
-    const result: string[] = [];
-    for (let i = 0; i < up; i++) result.push('..');
-    for (let i = common; i < toParts.length; i++) result.push(toParts[i]);
-    return result.join('/') || '.';
-  }
+    /**
+     * Get the OS-specific path delimiter
+     */
+    delimiter: (): string => {
+        return path.delimiter;
+    },
 
-  toNamespacedPath(path: string): string { return path; }
+    /**
+     * Parse a path into its components
+     */
+    parse: (filePath: string): { root: string; dir: string; base: string; ext: string; name: string } => {
+        return path.parse(filePath);
+    },
 
-  matchesGlob(path: string, pattern: string): boolean {
-    let regex = '^';
-    let i = 0;
-    while (i < pattern.length) {
-      const c = pattern[i];
-      if (c === '*') {
-        if (i + 1 < pattern.length && pattern[i + 1] === '*') {
-          regex += '.*'; i += 2;
-        } else { regex += '[^/]*'; i++; }
-      } else if (c === '?') { regex += '[^/]'; i++; }
-      else if ('\\^$.|+(){}'.includes(c)) { regex += '\\' + c; i++; }
-      else { regex += c; i++; }
-    }
-    return new RegExp(regex + '$').test(path);
-  }
+    /**
+     * Build a path from components
+     */
+    format: (pathObject: { root?: string; dir?: string; base?: string; ext?: string; name?: string }): string => {
+        return path.format(pathObject as any);
+    },
 
-  private getCwd(): string {
-    return typeof process !== 'undefined' ? process.cwd() : '/';
-  }
-}
+    // =========================================================================
+    // PATH UTILITIES
+    // =========================================================================
 
-class Win32Path implements PathModule {
-  sep = '\\';
-  delimiter = ';';
-  private _posix: PathModule | null = null;
-  private _win32: PathModule = this;
+    /**
+     * Get the file name without extension
+     */
+    name: (filePath: string): string => {
+        return path.basename(filePath, path.extname(filePath));
+    },
 
-  get posix(): PathModule {
-    if (!this._posix) this._posix = new PosixPath();
-    return this._posix;
-  }
-  get win32(): PathModule { return this; }
+    /**
+     * Change the extension of a path
+     */
+    changeExt: (filePath: string, newExt: string): string => {
+        const dir = path.dirname(filePath);
+        const name = path.basename(filePath, path.extname(filePath));
+        const ext = newExt.startsWith(".") ? newExt : `.${newExt}`;
+        return path.join(dir, name + ext);
+    },
 
-  join(...paths: string[]): string {
-    if (paths.length === 0) return '.';
-    let joined = '';
-    for (const segment of paths) {
-      const s = segment.replace(/\\/g, '/');
-      if (!s) continue;
-      if (!joined) { joined = s; }
-      else if (joined.endsWith('/') && s.startsWith('/')) { joined += s.slice(1); }
-      else if (!joined.endsWith('/') && !s.startsWith('/')) { joined += '/' + s; }
-      else { joined += s; }
-    }
-    return joined.replace(/\//g, '\\') || '.';
-  }
+    /**
+     * Add a suffix to the filename before the extension
+     */
+    addSuffix: (filePath: string, suffix: string): string => {
+        const dir = path.dirname(filePath);
+        const ext = path.extname(filePath);
+        const name = path.basename(filePath, ext);
+        return path.join(dir, name + suffix + ext);
+    },
 
-  resolve(...paths: string[]): string {
-    let resolved = '';
-    let isAbsolute = false;
-    for (let i = paths.length - 1; i >= 0; i--) {
-      const p = paths[i].replace(/\\/g, '/');
-      if (!p) continue;
-      resolved = p + (resolved ? '/' + resolved : '');
-      if (this.isAbsolute(p)) { isAbsolute = true; break; }
-    }
-    if (!isAbsolute) resolved = this.join(this.getCwd().replace(/\\/g, '/'), resolved);
-    return this.normalize(resolved);
-  }
+    /**
+     * Check if a path has a specific extension
+     */
+    hasExt: (filePath: string, ext: string): boolean => {
+        const fileExt = path.extname(filePath).toLowerCase();
+        const checkExt = ext.startsWith(".") ? ext.toLowerCase() : `.${ext.toLowerCase()}`;
+        return fileExt === checkExt;
+    },
 
-  normalize(path: string): string {
-    path = path.replace(/\\/g, '/');
-    if (!path) return '.';
-    const isAbsolute = this.isAbsolute(path);
-    const trailingSlash = path.endsWith('/') && path.length > 1;
-    const parts = path.split('/');
-    const normalized: string[] = [];
-    for (const part of parts) {
-      if (!part || part === '.') continue;
-      if (part === '..') {
-        if (normalized.length > 0 && normalized[normalized.length - 1] !== '..') {
-          normalized.pop();
-        } else if (!isAbsolute) { normalized.push('..'); }
-      } else { normalized.push(part); }
-    }
-    let result = normalized.join('\\');
-    if (isAbsolute) {
-      const drive = path.match(/^([a-zA-Z]:)/);
-      if (drive) result = drive[1] + '\\' + result;
-      else if (path.startsWith('//')) result = '\\\\' + result;
-    }
-    if (trailingSlash && !result.endsWith('\\')) result += '\\';
-    return result || '.';
-  }
+    /**
+     * Check if a path is a child of another path
+     */
+    isChildOf: (childPath: string, parentPath: string): boolean => {
+        const relative = path.relative(parentPath, childPath);
+        return !relative.startsWith("..") && relative !== "";
+    },
 
-  dirname(path: string): string {
-    path = path.replace(/\\/g, '/');
-    if (!path) return '.';
-    let end = path.length - 1;
-    while (end > 0 && path[end] === '/') end--;
-    const lastSlash = path.lastIndexOf('/', end);
-    if (lastSlash === -1) return '.';
-    if (lastSlash === 2 && path[1] === ':') return path.slice(0, 3);
-    if (lastSlash === 0) return '/';
-    return path.slice(0, lastSlash).replace(/\//g, '\\');
-  }
+    /**
+     * Get the common prefix of multiple paths
+     */
+    commonPrefix: (...paths: string[]): string => {
+        if (paths.length === 0) return "";
+        if (paths.length === 1) return path.dirname(paths[0]);
 
-  basename(path: string, ext?: string): string {
-    path = path.replace(/\\/g, '/');
-    if (!path) return '';
-    let end = path.length;
-    while (end > 1 && path[end - 1] === '/') end--;
-    const trimmed = path.slice(0, end);
-    const lastSlash = trimmed.lastIndexOf('/');
-    let base = lastSlash === -1 ? trimmed : trimmed.slice(lastSlash + 1);
-    if (ext && base.endsWith(ext)) base = base.slice(0, -ext.length);
-    return base;
-  }
+        const parts = paths.map(p => p.split(path.sep));
+        const first = parts[0];
+        let common = "";
 
-  extname(path: string): string {
-    const base = this.basename(path);
-    const lastDot = base.lastIndexOf('.');
-    if (lastDot <= 0) return '';
-    return base.slice(lastDot);
-  }
+        for (let i = 0; i < first.length; i++) {
+            const segment = first[i];
+            if (parts.every(p => p[i] === segment)) {
+                common = path.join(common, segment);
+            } else {
+                break;
+            }
+        }
 
-  parse(path: string): PathObject {
-    path = path.replace(/\\/g, '/');
-    const drive = path.match(/^([a-zA-Z]:)/);
-    const root = drive ? drive[1] + '/' : (path.startsWith('/') ? '/' : '');
-    const dir = this.dirname(path).replace(/\//g, '\\');
-    const base = this.basename(path);
-    const ext = this.extname(path);
-    const name = base.slice(0, base.length - ext.length);
-    return { root, dir, base, ext, name };
-  }
+        return common;
+    },
 
-  format(pathObj: PathObject): string {
-    let path = pathObj.root || '';
-    if (pathObj.dir && pathObj.dir !== '.') {
-      path += pathObj.dir;
-      if (!path.endsWith('\\') && !path.endsWith('/')) path += '\\';
-    }
-    path += pathObj.base || (pathObj.name + pathObj.ext);
-    return path;
-  }
+    /**
+     * Convert a path to use forward slashes (useful for URLs)
+     */
+    toForwardSlashes: (filePath: string): string => {
+        return filePath.replace(/\\/g, "/");
+    },
 
-  isAbsolute(path: string): boolean {
-    return /^([a-zA-Z]:)|^\\\\/.test(path);
-  }
+    /**
+     * Convert a path to use backslashes (Windows style)
+     */
+    toBackslashes: (filePath: string): string => {
+        return filePath.replace(/\//g, "\\");
+    },
 
-  relative(from: string, to: string): string {
-    const fromParts = this.normalize(from).replace(/\\/g, '/').split('/').filter(p => p);
-    const toParts = this.normalize(to).replace(/\\/g, '/').split('/').filter(p => p);
-    let common = 0;
-    while (common < fromParts.length && common < toParts.length &&
-           fromParts[common].toLowerCase() === toParts[common].toLowerCase()) common++;
-    const up = fromParts.length - common;
-    const result: string[] = [];
-    for (let i = 0; i < up; i++) result.push('..');
-    for (let i = common; i < toParts.length; i++) result.push(toParts[i]);
-    return result.join('\\') || '.';
-  }
+    /**
+     * Get the parent directory
+     */
+    parent: (filePath: string): string => {
+        return path.dirname(filePath);
+    },
 
-  toNamespacedPath(path: string): string {
-    if (typeof process !== 'undefined' && process.platform === 'win32') {
-      if (path.length >= 2 && path[1] === ':') return '\\?\' + path;
-    }
-    return path;
-  }
+    /**
+     * Get the depth of a path (number of directories)
+     */
+    depth: (filePath: string): number => {
+        return path.normalize(filePath).split(path.sep).filter(s => s !== "").length;
+    },
 
-  matchesGlob(path: string, pattern: string): boolean {
-    return new PosixPath().matchesGlob(path.replace(/\\/g, '/'), pattern.replace(/\\/g, '/'));
-  }
+    /**
+     * Check if a path is the root directory
+     */
+    isRoot: (filePath: string): boolean => {
+        const normalized = path.normalize(filePath);
+        return normalized === "/" || /^[a-zA-Z]:[\\/]$/.test(normalized);
+    },
 
-  private getCwd(): string {
-    return typeof process !== 'undefined' ? process.cwd() : 'C:\\';
-  }
-}
+    /**
+     * Get the home directory
+     */
+    home: (): string => {
+        return require("os").homedir();
+    },
 
-export function createPathModule(): PathModule {
-  if (typeof process !== 'undefined' && process.platform === 'win32') return new Win32Path();
-  return new PosixPath();
-}
+    /**
+     * Get the current working directory
+     */
+    cwd: (): string => {
+        return process.cwd();
+    },
 
-let defaultPath: PathModule | null = null;
-export function getPath(): PathModule {
-  if (!defaultPath) defaultPath = createPathModule();
-  return defaultPath;
-}
+    /**
+     * Get the temporary directory
+     */
+    tmpdir: (): string => {
+        return require("os").tmpdir();
+    },
 
-export default getPath();
+    /**
+     * Create a unique temporary path
+     */
+    tempPath: (prefix: string = "tmp", suffix: string = ""): string => {
+        const tmpDir = require("os").tmpdir();
+        const name = `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${suffix}`;
+        return path.join(tmpDir, name);
+    },
+
+    /**
+     * Sanitize a filename (remove invalid characters)
+     */
+    sanitize: (fileName: string): string => {
+        return fileName.replace(/[<>:"/\\|?*]/g, "_").trim();
+    },
+
+    /**
+     * Truncate a path if it's too long
+     */
+    truncate: (filePath: string, maxLength: number = 60): string => {
+        if (filePath.length <= maxLength) return filePath;
+        const parts = filePath.split(path.sep);
+        if (parts.length <= 2) return filePath;
+        return path.join(parts[0], "...", parts[parts.length - 1]);
+    },
+
+    /**
+     * Match a path against a glob pattern
+     */
+    matches: (filePath: string, pattern: string): boolean => {
+        const regex = new RegExp(
+            "^" + pattern
+                .replace(/\.\*/g, "\.")
+                .replace(/\*\*/g, ".*")
+                .replace(/\*/g, "[^\/]*")
+                .replace(/\?/g, ".")
+                .replace(/\./g, "\.")
+            + "$"
+        );
+        return regex.test(filePath);
+    },
+
+    /**
+     * Get all extensions from a path (e.g., .tar.gz)
+     */
+    allExts: (filePath: string): string[] => {
+        const base = path.basename(filePath);
+        const parts = base.split(".");
+        if (parts.length <= 1) return [];
+        return parts.slice(1).map((_, i) => "." + parts.slice(i + 1).join("."));
+    },
+};
