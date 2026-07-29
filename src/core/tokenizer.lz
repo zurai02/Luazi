@@ -1,0 +1,211 @@
+// tokenizer.lz - Luazi Lexical Analyzer
+import core
+
+enum TokenType {
+  NUMBER, STRING, BOOL, NIL, IDENT,
+  FN, LET, CONST, MUT, REF, RETURN, IF, ELSE, WHILE, FOR, IN,
+  MATCH, ENUM, STRUCT, TRAIT, IMPL, IMPORT, AS, PUB, PRIV,
+  TYPE, WHERE, BREAK, CONTINUE, DEFER, AWAIT, ASYNC, YIELD,
+  PLUS, MINUS, STAR, SLASH, PERCENT, POW,
+  EQ, EQEQ, BANGEQ, LT, GT, LTEQ, GTEQ,
+  AND, OR, BANG, AMPERSAND, PIPE, CARET, TILDE, SHL, SHR,
+  PLUSEQ, MINUSEQ, STAREQ, SLASHEQ, PERCENTEQ,
+  LPAREN, RPAREN, LBRACE, RBRACE, LBRACKET, RBRACKET,
+  COMMA, DOT, DOTDOT, DOTDOTDOT, COLON, COLONCOLON, SEMICOLON,
+  ARROW, FATARROW, QUESTION, BANGQUESTION, AT,
+  NEWLINE, INDENT, DEDENT, EOF, COMMENT
+}
+
+struct Token {
+  type: TokenType
+  lexeme: string
+  value: any
+  line: int
+  col: int
+  file: string
+}
+
+struct Tokenizer {
+  source: string
+  file: string
+  tokens: Vec<Token>
+  start: int
+  current: int
+  line: int
+  col: int
+  indent_stack: Vec<int>
+  at_line_start: bool
+}
+
+fn Tokenizer.new(source: string, file: string) -> Tokenizer {
+  return Tokenizer { source: source, file: file, tokens: Vec.new<Token>(), start: 0, current: 0, line: 1, col: 1, indent_stack: Vec.new<int>(), at_line_start: true }
+}
+
+fn Tokenizer.is_at_end(self: ref Tokenizer) -> bool { return self.current >= self.source.len() }
+fn Tokenizer.peek(self: ref Tokenizer) -> char { if self.is_at_end() { return '\0' } return self.source[self.current] }
+fn Tokenizer.peek_next(self: ref Tokenizer) -> char { if self.current + 1 >= self.source.len() { return '\0' } return self.source[self.current + 1] }
+
+fn Tokenizer.advance(self: ref mut Tokenizer) -> char {
+  let c = self.source[self.current]
+  self.current = self.current + 1
+  self.col = self.col + 1
+  if c == '\n' { self.line = self.line + 1; self.col = 1; self.at_line_start = true }
+  return c
+}
+
+fn Tokenizer.match(self: ref mut Tokenizer, expected: char) -> bool {
+  if self.is_at_end() { return false }
+  if self.source[self.current] != expected { return false }
+  self.advance()
+  return true
+}
+
+fn Tokenizer.add_token(self: ref mut Tokenizer, type: TokenType, value: any) {
+  let lexeme = self.source.slice(self.start, self.current)
+  self.tokens.push(Token { type: type, lexeme: lexeme, value: value, line: self.line, col: self.col - lexeme.len(), file: self.file })
+}
+
+fn Tokenizer.add_simple(self: ref mut Tokenizer, type: TokenType) { self.add_token(type, nil) }
+fn Tokenizer.error(self: ref Tokenizer, msg: string) -> never {
+  panic("Tokenizer Error at " + self.file + ":" + self.line + ":" + self.col + " - " + msg)
+}
+
+fn Tokenizer.skip_whitespace(self: ref mut Tokenizer) {
+  while !self.is_at_end() {
+    let c = self.peek()
+    if c == ' ' or c == '\t' { self.advance() }
+    else if c == '\r' { self.advance() }
+    else if c == '\n' { self.advance(); self.handle_indentation() }
+    else if c == '/' and self.peek_next() == '/' { while self.peek() != '\n' and !self.is_at_end() { self.advance() } }
+    else if c == '/' and self.peek_next() == '*' { self.advance(); self.advance(); while !self.is_at_end() { if self.peek() == '*' and self.peek_next() == '/' { self.advance(); self.advance(); break } self.advance() } }
+    else { break }
+  }
+}
+
+fn Tokenizer.handle_indentation(self: ref mut Tokenizer) {
+  let indent = 0
+  while self.peek() == ' ' { indent = indent + 1; self.advance() }
+  while self.peek() == '\t' { indent = indent + 4; self.advance() }
+  if self.peek() == '\n' or self.peek() == '/' { return }
+  let current_indent = if self.indent_stack.len() > 0 { self.indent_stack[self.indent_stack.len() - 1] } else { 0 }
+  if indent > current_indent { self.indent_stack.push(indent); self.add_simple(TokenType.INDENT) }
+  else if indent < current_indent { while self.indent_stack.len() > 0 and self.indent_stack[self.indent_stack.len() - 1] > indent { self.indent_stack.pop(); self.add_simple(TokenType.DEDENT) } }
+  self.at_line_start = false
+}
+
+fn Tokenizer.scan_string(self: ref mut Tokenizer) {
+  let quote = self.advance()
+  let start_line = self.line
+  while self.peek() != quote and !self.is_at_end() {
+    if self.peek() == '\\' { self.advance(); if !self.is_at_end() { self.advance() } }
+    else { self.advance() }
+  }
+  if self.is_at_end() { self.error("Unterminated string starting at line " + start_line) }
+  self.advance()
+  let raw = self.source.slice(self.start + 1, self.current - 1)
+  self.add_token(TokenType.STRING, self.unescape(raw))
+}
+
+fn Tokenizer.unescape(self: ref Tokenizer, s: string) -> string {
+  let result = StringBuilder.new()
+  let i = 0
+  while i < s.len() {
+    if s[i] == '\\' and i + 1 < s.len() {
+      let next = s[i + 1]
+      if next == 'n' { result.append('\n') } else if next == 't' { result.append('\t') } else if next == 'r' { result.append('\r') } else if next == '\\' { result.append('\\') } else if next == '"' { result.append('"') } else if next == '\'' { result.append('\'') } else if next == '0' { result.append('\0') } else { result.append(next) }
+      i = i + 2
+    } else { result.append(s[i]); i = i + 1 }
+  }
+  return result.to_string()
+}
+
+fn Tokenizer.scan_number(self: ref mut Tokenizer) {
+  while is_digit(self.peek()) { self.advance() }
+  if self.peek() == '.' and is_digit(self.peek_next()) { self.advance(); while is_digit(self.peek()) { self.advance() } }
+  if self.peek() == 'e' or self.peek() == 'E' { self.advance(); if self.peek() == '+' or self.peek() == '-' { self.advance() } while is_digit(self.peek()) { self.advance() } }
+  let lexeme = self.source.slice(self.start, self.current)
+  self.add_token(TokenType.NUMBER, lexeme.to_f64())
+}
+
+fn Tokenizer.scan_ident(self: ref mut Tokenizer) {
+  while is_alphanumeric(self.peek()) or self.peek() == '_' { self.advance() }
+  let lexeme = self.source.slice(self.start, self.current)
+  let kw = keywords()
+  if kw.contains_key(lexeme) {
+    let type = kw.get(lexeme)
+    if type == TokenType.BOOL { self.add_token(type, lexeme == "true") }
+    else if type == TokenType.NIL { self.add_token(type, nil) }
+    else { self.add_simple(type) }
+  } else { self.add_token(TokenType.IDENT, lexeme) }
+}
+
+fn keywords() -> Map<string, TokenType> {
+  let kw = Map.new<string, TokenType>()
+  kw.insert("fn", TokenType.FN); kw.insert("let", TokenType.LET); kw.insert("const", TokenType.CONST)
+  kw.insert("mut", TokenType.MUT); kw.insert("ref", TokenType.REF); kw.insert("return", TokenType.RETURN)
+  kw.insert("if", TokenType.IF); kw.insert("else", TokenType.ELSE); kw.insert("while", TokenType.WHILE)
+  kw.insert("for", TokenType.FOR); kw.insert("in", TokenType.IN); kw.insert("match", TokenType.MATCH)
+  kw.insert("enum", TokenType.ENUM); kw.insert("struct", TokenType.STRUCT); kw.insert("trait", TokenType.TRAIT)
+  kw.insert("impl", TokenType.IMPL); kw.insert("import", TokenType.IMPORT); kw.insert("as", TokenType.AS)
+  kw.insert("pub", TokenType.PUB); kw.insert("priv", TokenType.PRIV); kw.insert("type", TokenType.TYPE)
+  kw.insert("where", TokenType.WHERE); kw.insert("break", TokenType.BREAK); kw.insert("continue", TokenType.CONTINUE)
+  kw.insert("defer", TokenType.DEFER); kw.insert("await", TokenType.AWAIT); kw.insert("async", TokenType.ASYNC)
+  kw.insert("yield", TokenType.YIELD); kw.insert("true", TokenType.BOOL); kw.insert("false", TokenType.BOOL)
+  kw.insert("nil", TokenType.NIL)
+  return kw
+}
+
+fn Tokenizer.scan_token(self: ref mut Tokenizer) {
+  self.skip_whitespace()
+  if self.is_at_end() {
+    while self.indent_stack.len() > 0 { self.indent_stack.pop(); self.add_simple(TokenType.DEDENT) }
+    self.add_simple(TokenType.EOF)
+    return
+  }
+  self.start = self.current
+  let c = self.advance()
+  match c {
+    '(' => self.add_simple(TokenType.LPAREN), ')' => self.add_simple(TokenType.RPAREN),
+    '{' => self.add_simple(TokenType.LBRACE), '}' => self.add_simple(TokenType.RBRACE),
+    '[' => self.add_simple(TokenType.LBRACKET), ']' => self.add_simple(TokenType.RBRACKET),
+    ',' => self.add_simple(TokenType.COMMA), ';' => self.add_simple(TokenType.SEMICOLON),
+    ':' => if self.match(':') { self.add_simple(TokenType.COLONCOLON) } else { self.add_simple(TokenType.COLON) },
+    '?' => if self.match('!') { self.add_simple(TokenType.BANGQUESTION) } else { self.add_simple(TokenType.QUESTION) },
+    '@' => self.add_simple(TokenType.AT),
+    '+' => if self.match('=') { self.add_simple(TokenType.PLUSEQ) } else { self.add_simple(TokenType.PLUS) },
+    '-' => if self.match('=') { self.add_simple(TokenType.MINUSEQ) } else if self.match('>') { self.add_simple(TokenType.ARROW) } else { self.add_simple(TokenType.MINUS) },
+    '*' => if self.match('=') { self.add_simple(TokenType.STAREQ) } else if self.match('*') { self.add_simple(TokenType.POW) } else { self.add_simple(TokenType.STAR) },
+    '/' => if self.match('=') { self.add_simple(TokenType.SLASHEQ) } else { self.add_simple(TokenType.SLASH) },
+    '%' => if self.match('=') { self.add_simple(TokenType.PERCENTEQ) } else { self.add_simple(TokenType.PERCENT) },
+    '!' => if self.match('=') { self.add_simple(TokenType.BANGEQ) } else { self.add_simple(TokenType.BANG) },
+    '=' => if self.match('=') { self.add_simple(TokenType.EQEQ) } else if self.match('>') { self.add_simple(TokenType.FATARROW) } else { self.add_simple(TokenType.EQ) },
+    '<' => if self.match('=') { self.add_simple(TokenType.LTEQ) } else if self.match('<') { self.add_simple(TokenType.SHL) } else { self.add_simple(TokenType.LT) },
+    '>' => if self.match('=') { self.add_simple(TokenType.GTEQ) } else if self.match('>') { self.add_simple(TokenType.SHR) } else { self.add_simple(TokenType.GT) },
+    '&' => if self.match('&') { self.add_simple(TokenType.AND) } else { self.add_simple(TokenType.AMPERSAND) },
+    '|' => if self.match('|') { self.add_simple(TokenType.OR) } else { self.add_simple(TokenType.PIPE) },
+    '^' => self.add_simple(TokenType.CARET), '~' => self.add_simple(TokenType.TILDE),
+    '.' => if self.match('.') { if self.match('.') { self.add_simple(TokenType.DOTDOTDOT) } else { self.add_simple(TokenType.DOTDOT) } } else { self.add_simple(TokenType.DOT) },
+    '"' => self.scan_string(), '\'' => self.scan_string(),
+    _ => {
+      if is_digit(c) { self.current = self.current - 1; self.col = self.col - 1; self.scan_number() }
+      else if is_alpha(c) or c == '_' { self.current = self.current - 1; self.col = self.col - 1; self.scan_ident() }
+      else { self.error("Unexpected character: '" + c + "'") }
+    }
+  }
+}
+
+fn Tokenizer.tokenize(self: ref mut Tokenizer) -> Vec<Token> {
+  while !self.is_at_end() or self.tokens.len() == 0 or self.tokens[self.tokens.len() - 1].type != TokenType.EOF {
+    self.scan_token()
+  }
+  return self.tokens
+}
+
+fn is_digit(c: char) -> bool { return c >= '0' and c <= '9' }
+fn is_alpha(c: char) -> bool { return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') }
+fn is_alphanumeric(c: char) -> bool { return is_alpha(c) or is_digit(c) }
+
+pub fn tokenize(source: string, file: string) -> Vec<Token> {
+  let tokenizer = Tokenizer.new(source, file)
+  return tokenizer.tokenize()
+  }
