@@ -1,0 +1,114 @@
+// ast.lz - Luazi Abstract Syntax Tree
+import core
+
+struct Span { file: string; start_line: int; start_col: int; end_line: int; end_col: int }
+fn Span.new(file: string, line: int, col: int) -> Span { return Span { file: file, start_line: line, start_col: col, end_line: line, end_col: col } }
+
+enum BinaryOp { ADD, SUB, MUL, DIV, MOD, POW, EQ, NE, LT, GT, LE, GE, AND, OR, BIT_AND, BIT_OR, BIT_XOR, BIT_SHL, BIT_SHR, ASSIGN, RANGE, RANGE_INCL }
+enum UnaryOp { NEG, NOT, BIT_NOT, DEREF, REF, REF_MUT, SPREAD }
+
+struct Param { name: string; type_expr: ref TypeExpr; default_value: ref Expr; is_mut: bool; is_ref: bool; span: Span }
+struct GenericParam { name: string; bounds: Vec<ref TypeExpr>; default_type: ref TypeExpr; span: Span }
+struct WhereConstraint { type_expr: ref TypeExpr; trait_bounds: Vec<ref TypeExpr>; span: Span }
+struct StructField { name: string; type_expr: ref TypeExpr; default_value: ref Expr; is_pub: bool; span: Span }
+struct EnumVariant { name: string; fields: Vec<StructField>; discriminant: ref Expr; span: Span }
+struct TraitMethod { name: string; params: Vec<Param>; return_type: ref TypeExpr; is_async: bool; span: Span }
+struct MatchArm { pattern: ref Pattern; guard: ref Expr; body: ref Expr; span: Span }
+
+enum TypeExpr {
+  Named { name: string; args: Vec<ref TypeExpr>; span: Span }
+  Array { elem: ref TypeExpr; size: ref Expr; span: Span }
+  Tuple { elems: Vec<ref TypeExpr>; span: Span }
+  Fn { params: Vec<ref TypeExpr>; ret: ref TypeExpr; span: Span }
+  Ref { inner: ref TypeExpr; is_mut: bool; span: Span }
+  Ptr { inner: ref TypeExpr; is_mut: bool; span: Span }
+  Slice { elem: ref TypeExpr; span: Span }
+  Map { key: ref TypeExpr; value: ref TypeExpr; span: Span }
+  Option { inner: ref TypeExpr; span: Span }
+  Result { ok: ref TypeExpr; err: ref TypeExpr; span: Span }
+  SelfType { span: Span }
+  Never { span: Span }
+  Infer { span: Span }
+  Wildcard { span: Span }
+}
+
+enum Pattern {
+  Wildcard { span: Span }
+  IdentPat { name: string; is_mut: bool; is_ref: bool; span: Span }
+  NumberPat { value: f64; span: Span }
+  StringPat { value: string; span: Span }
+  BoolPat { value: bool; span: Span }
+  NilPat { span: Span }
+  ArrayPat { elements: Vec<ref Pattern>; span: Span }
+  TuplePat { elements: Vec<ref Pattern>; span: Span }
+  StructPat { name: string; fields: Vec<(string, ref Pattern)>; span: Span }
+  EnumPat { name: string; variant: string; fields: Vec<ref Pattern>; span: Span }
+  RestPat { name: string; span: Span }
+  OrPat { left: ref Pattern; right: ref Pattern; span: Span }
+  RangePat { start: ref Pattern; end: ref Pattern; inclusive: bool; span: Span }
+  BindingPat { name: string; pattern: ref Pattern; span: Span }
+}
+
+enum Expr {
+  NumberLit { value: f64; span: Span }
+  StringLit { value: string; span: Span }
+  BoolLit { value: bool; span: Span }
+  NilLit { span: Span }
+  Ident { name: string; span: Span }
+  Binary { op: BinaryOp; left: ref Expr; right: ref Expr; span: Span }
+  Unary { op: UnaryOp; operand: ref Expr; span: Span }
+  Assign { target: ref Expr; value: ref Expr; span: Span }
+  CompoundAssign { op: BinaryOp; target: ref Expr; value: ref Expr; span: Span }
+  Call { callee: ref Expr; args: Vec<ref Expr>; span: Span }
+  Member { object: ref Expr; member: string; span: Span }
+  Index { object: ref Expr; index: ref Expr; span: Span }
+  ArrayLit { elements: Vec<ref Expr>; span: Span }
+  TupleLit { elements: Vec<ref Expr>; span: Span }
+  MapLit { entries: Vec<(ref Expr, ref Expr)>; span: Span }
+  StructLit { name: string; fields: Vec<(string, ref Expr)>; span: Span }
+  Lambda { params: Vec<Param>; return_type: ref TypeExpr; body: ref Expr; span: Span }
+  Block { stmts: Vec<ref Stmt>; expr: ref Expr; span: Span }
+  If { cond: ref Expr; then_branch: ref Expr; else_branch: ref Expr; span: Span }
+  While { cond: ref Expr; body: ref Expr; span: Span }
+  For { var_name: string; iterable: ref Expr; body: ref Expr; span: Span }
+  Match { expr: ref Expr; arms: Vec<MatchArm>; span: Span }
+  Return { value: ref Expr; span: Span }
+  Break { span: Span }
+  Continue { span: Span }
+  Defer { expr: ref Expr; span: Span }
+  Await { expr: ref Expr; span: Span }
+  Yield { value: ref Expr; span: Span }
+  Try { body: ref Expr; catch_var: string; catch_body: ref Expr; span: Span }
+  Cast { expr: ref Expr; type_expr: ref TypeExpr; span: Span }
+  Is { expr: ref Expr; type_expr: ref TypeExpr; span: Span }
+  As { expr: ref Expr; type_expr: ref TypeExpr; span: Span }
+  Range { start: ref Expr; end: ref Expr; inclusive: bool; span: Span }
+  Spread { expr: ref Expr; span: Span }
+  Ref { expr: ref Expr; span: Span }
+  Deref { expr: ref Expr; span: Span }
+  Sizeof { type_expr: ref TypeExpr; span: Span }
+  Typeof { expr: ref Expr; span: Span }
+}
+
+enum Stmt {
+  ExprStmt { expr: ref Expr; span: Span }
+  VarDecl { name: string; type_expr: ref TypeExpr; init: ref Expr; is_const: bool; is_mut: bool; span: Span }
+  FnDecl { name: string; params: Vec<Param>; return_type: ref TypeExpr; body: ref Expr; is_pub: bool; generics: Vec<GenericParam>; where_clause: Vec<WhereConstraint>; span: Span }
+  StructDecl { name: string; fields: Vec<StructField>; is_pub: bool; generics: Vec<GenericParam>; span: Span }
+  EnumDecl { name: string; variants: Vec<EnumVariant>; is_pub: bool; generics: Vec<GenericParam>; span: Span }
+  TraitDecl { name: string; methods: Vec<TraitMethod>; is_pub: bool; generics: Vec<GenericParam>; span: Span }
+  ImplDecl { trait_name: string; type_name: string; methods: Vec<ref Stmt>; generics: Vec<GenericParam>; span: Span }
+  Import { path: string; alias: string; items: Vec<string>; span: Span }
+  TypeDecl { name: string; type_expr: ref TypeExpr; generics: Vec<GenericParam>; span: Span }
+  ModuleDecl { name: string; stmts: Vec<ref Stmt>; span: Span }
+  UseDecl { path: string; alias: string; span: Span }
+}
+
+struct Program { stmts: Vec<ref Stmt>; span: Span }
+
+pub fn number_lit(value: f64, span: Span) -> Expr { return Expr.NumberLit { value: value, span: span } }
+pub fn ident(name: string, span: Span) -> Expr { return Expr.Ident { name: name, span: span } }
+pub fn binary(op: BinaryOp, left: ref Expr, right: ref Expr, span: Span) -> Expr { return Expr.Binary { op: op, left: left, right: right, span: span } }
+pub fn fn_decl(name: string, params: Vec<Param>, return_type: ref TypeExpr, body: ref Expr, span: Span) -> Stmt {
+  return Stmt.FnDecl { name: name, params: params, return_type: return_type, body: body, is_pub: false, generics: Vec.new<GenericParam>(), where_clause: Vec.new<WhereConstraint>(), span: span }
+  }
