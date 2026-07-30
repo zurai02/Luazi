@@ -1,0 +1,242 @@
+// parser.lz - Luazi Recursive-Descent + Pratt Parser
+import core
+import tokenizer
+import ast
+
+struct ParseError { msg: string; span: Span }
+fn ParseError.new(msg: string, span: Span) -> ParseError { return ParseError { msg: msg, span: span } }
+
+struct Parser { tokens: Vec<Token>; current: int; file: string }
+fn Parser.new(tokens: Vec<Token>, file: string) -> Parser { return Parser { tokens: tokens, current: 0, file: file } }
+
+fn Parser.peek(self: ref Parser) -> Token { if self.current >= self.tokens.len() { return self.tokens[self.tokens.len() - 1] } return self.tokens[self.current] }
+fn Parser.previous(self: ref Parser) -> Token { return self.tokens[self.current - 1] }
+fn Parser.is_at_end(self: ref Parser) -> bool { return self.peek().type == TokenType.EOF }
+fn Parser.advance(self: ref mut Parser) -> Token { if !self.is_at_end() { self.current = self.current + 1 } return self.previous() }
+fn Parser.check(self: ref Parser, type: TokenType) -> bool { if self.is_at_end() { return false } return self.peek().type == type }
+fn Parser.match(self: ref mut Parser, types: Vec<TokenType>) -> bool { for t in types { if self.check(t) { self.advance(); return true } } return false }
+fn Parser.expect(self: ref mut Parser, type: TokenType, msg: string) -> Token { if self.check(type) { return self.advance() } let tok = self.peek(); self.error(msg + " (got " + tok.lexeme + ")", tok); return tok }
+fn Parser.span(self: ref Parser) -> Span { let tok = self.peek(); return Span.new(self.file, tok.line, tok.col) }
+fn Parser.error(self: ref Parser, msg: string, tok: Token) -> never { panic("Parse Error at " + tok.file + ":" + tok.line + ":" + tok.col + " - " + msg) }
+
+enum Precedence { NONE, ASSIGNMENT, OR, AND, EQUALITY, COMPARISON, RANGE, TERM, FACTOR, POWER, UNARY, CALL, PRIMARY }
+fn precedence(type: TokenType) -> Precedence {
+  match type {
+    EQ | PLUSEQ | MINUSEQ | STAREQ | SLASHEQ | PERCENTEQ => Precedence.ASSIGNMENT,
+    OR => Precedence.OR, AND => Precedence.AND,
+    EQEQ | BANGEQ => Precedence.EQUALITY, LT | GT | LTEQ | GTEQ => Precedence.COMPARISON,
+    DOTDOT | DOTDOTDOT => Precedence.RANGE, PLUS | MINUS => Precedence.TERM,
+    STAR | SLASH | PERCENT => Precedence.FACTOR, POW => Precedence.POWER,
+    BANG | TILDE | AMPERSAND | REF | MUT => Precedence.UNARY,
+    LPAREN | LBRACKET | DOT => Precedence.CALL, _ => Precedence.NONE
+  }
+}
+
+fn Parser.parse_expr(self: ref mut Parser, min_prec: Precedence) -> ref Expr {
+  let mut prefix = self.parse_prefix()
+  while precedence(self.peek().type) >= min_prec {
+    let op_type = self.peek().type; self.advance()
+    let op = self.token_to_binary_op(op_type)
+    let next_prec = self.next_precedence(precedence(op_type))
+    let right = self.parse_expr(next_prec)
+    let span = self.merge_span(prefix.span, right.span)
+    prefix = alloc(Expr.Binary { op: op, left: prefix, right: right, span: span })
+  }
+  return prefix
+}
+
+fn Parser.parse_prefix(self: ref mut Parser) -> ref Expr {
+  let start_span = self.span(); let tok = self.peek()
+  match tok.type {
+    NUMBER => { self.advance(); return alloc(Expr.NumberLit { value: tok.value as f64, span: start_span }) }
+    STRING => { self.advance(); return alloc(Expr.StringLit { value: tok.value as string, span: start_span }) }
+    BOOL => { self.advance(); return alloc(Expr.BoolLit { value: tok.value as bool, span: start_span }) }
+    NIL => { self.advance(); return alloc(Expr.NilLit { span: start_span }) }
+    IDENT => { self.advance(); return alloc(Expr.Ident { name: tok.lexeme, span: start_span }) }
+    MINUS => { self.advance(); let opd = self.parse_prefix(); return alloc(Expr.Unary { op: UnaryOp.NEG, operand: opd, span: start_span }) }
+    BANG => { self.advance(); let opd = self.parse_prefix(); return alloc(Expr.Unary { op: UnaryOp.NOT, operand: opd, span: start_span }) }
+    TILDE => { self.advance(); let opd = self.parse_prefix(); return alloc(Expr.Unary { op: UnaryOp.BIT_NOT, operand: opd, span: start_span }) }
+    AMPERSAND => { self.advance(); let is_mut = self.match([TokenType.MUT]); let opd = self.parse_prefix(); let op = if is_mut { UnaryOp.REF_MUT } else { UnaryOp.REF }; return alloc(Expr.Unary { op: op, operand: opd, span: start_span }) }
+    STAR => { self.advance(); let opd = self.parse_prefix(); return alloc(Expr.Unary { op: UnaryOp.DEREF, operand: opd, span: start_span }) }
+    LPAREN => { self.advance(); let expr = self.parse_expr(Precedence.NONE); self.expect(TokenType.RPAREN, "Expected ')'"); return expr }
+    LBRACKET => { self.advance(); let mut elems = Vec.new<ref Expr>(); while !self.check(TokenType.RBRACKET) and !self.is_at_end() { elems.push(self.parse_expr(Precedence.NONE)); if !self.match([TokenType.COMMA]) { break } } self.expect(TokenType.RBRACKET, "Expected ']'"); return alloc(Expr.ArrayLit { elements: elems, span: start_span }) }
+    LBRACE => { return self.parse_block() }
+    FN => { return self.parse_lambda() }
+    IF => { return self.parse_if_expr() }
+    WHILE => { return self.parse_while_expr() }
+    FOR => { return self.parse_for_expr() }
+    MATCH => { return self.parse_match_expr() }
+    RETURN => { self.advance(); let mut val = alloc(Expr.NilLit { span: start_span }); if !self.check(TokenType.NEWLINE) and !self.check(TokenType.SEMICOLON) and !self.check(TokenType.DEDENT) { val = self.parse_expr(Precedence.NONE) } return alloc(Expr.Return { value: val, span: start_span }) }
+    BREAK => { self.advance(); return alloc(Expr.Break { span: start_span }) }
+    CONTINUE => { self.advance(); return alloc(Expr.Continue { span: start_span }) }
+    DEFER => { self.advance(); let e = self.parse_expr(Precedence.NONE); return alloc(Expr.Defer { expr: e, span: start_span }) }
+    AWAIT => { self.advance(); let e = self.parse_expr(Precedence.CALL); return alloc(Expr.Await { expr: e, span: start_span }) }
+    YIELD => { self.advance(); let v = self.parse_expr(Precedence.NONE); return alloc(Expr.Yield { value: v, span: start_span }) }
+    _ => { self.error("Unexpected token: " + tok.lexeme, tok); return alloc(Expr.NilLit { span: start_span }) }
+  }
+}
+
+fn Parser.parse_block(self: ref mut Parser) -> ref Expr {
+  let start_span = self.span(); self.expect(TokenType.LBRACE, "Expected '{'")
+  let mut stmts = Vec.new<ref Stmt>(); let mut expr = alloc(Expr.NilLit { span: start_span })
+  while !self.check(TokenType.RBRACE) and !self.is_at_end() {
+    if self.check(TokenType.NEWLINE) or self.check(TokenType.SEMICOLON) { self.advance(); continue }
+    if self.is_stmt_start() { stmts.push(self.parse_stmt()) }
+    else { expr = self.parse_expr(Precedence.NONE); if !self.check(TokenType.RBRACE) { stmts.push(alloc(Stmt.ExprStmt { expr: expr, span: start_span })); expr = alloc(Expr.NilLit { span: start_span }) } }
+  }
+  self.expect(TokenType.RBRACE, "Expected '}'"); return alloc(Expr.Block { stmts: stmts, expr: expr, span: start_span })
+}
+
+fn Parser.parse_lambda(self: ref mut Parser) -> ref Expr {
+  let start_span = self.span(); self.expect(TokenType.FN, "Expected 'fn'"); self.expect(TokenType.LPAREN, "Expected '('")
+  let params = self.parse_params(); self.expect(TokenType.RPAREN, "Expected ')'"); let mut rt = alloc(TypeExpr.Infer { span: start_span }); if self.match([TokenType.ARROW]) { rt = self.parse_type_expr() } let body = self.parse_expr(Precedence.NONE); return alloc(Expr.Lambda { params: params, return_type: rt, body: body, span: start_span })
+}
+
+fn Parser.parse_if_expr(self: ref mut Parser) -> ref Expr {
+  let start_span = self.span(); self.expect(TokenType.IF, "Expected 'if'"); let cond = self.parse_expr(Precedence.NONE); let then_branch = self.parse_expr(Precedence.NONE); let mut else_branch = alloc(Expr.NilLit { span: start_span }); if self.match([TokenType.ELSE]) { else_branch = self.parse_expr(Precedence.NONE) } return alloc(Expr.If { cond: cond, then_branch: then_branch, else_branch: else_branch, span: start_span })
+}
+
+fn Parser.parse_while_expr(self: ref mut Parser) -> ref Expr {
+  let start_span = self.span(); self.expect(TokenType.WHILE, "Expected 'while'"); let cond = self.parse_expr(Precedence.NONE); let body = self.parse_expr(Precedence.NONE); return alloc(Expr.While { cond: cond, body: body, span: start_span })
+}
+
+fn Parser.parse_for_expr(self: ref mut Parser) -> ref Expr {
+  let start_span = self.span(); self.expect(TokenType.FOR, "Expected 'for'"); let var_tok = self.expect(TokenType.IDENT, "Expected variable"); self.expect(TokenType.IN, "Expected 'in'"); let iterable = self.parse_expr(Precedence.NONE); let body = self.parse_expr(Precedence.NONE); return alloc(Expr.For { var_name: var_tok.lexeme, iterable: iterable, body: body, span: start_span })
+}
+
+fn Parser.parse_match_expr(self: ref mut Parser) -> ref Expr {
+  let start_span = self.span(); self.expect(TokenType.MATCH, "Expected 'match'"); let expr = self.parse_expr(Precedence.NONE); self.expect(TokenType.LBRACE, "Expected '{'"); let mut arms = Vec.new<MatchArm>(); while !self.check(TokenType.RBRACE) and !self.is_at_end() { let pat = self.parse_pattern(); let mut guard = alloc(Expr.BoolLit { value: true, span: start_span }); if self.match([TokenType.IF]) { guard = self.parse_expr(Precedence.NONE) } self.expect(TokenType.FATARROW, "Expected '=>'"); let body = self.parse_expr(Precedence.NONE); arms.push(MatchArm { pattern: pat, guard: guard, body: body, span: start_span }); if !self.match([TokenType.COMMA]) and !self.check(TokenType.RBRACE) { self.error("Expected ',' or '}'", self.peek()) } } self.expect(TokenType.RBRACE, "Expected '}'"); return alloc(Expr.Match { expr: expr, arms: arms, span: start_span })
+}
+
+fn Parser.parse_pattern(self: ref mut Parser) -> ref Pattern {
+  let start_span = self.span(); let tok = self.peek()
+  match tok.type {
+    IDENT => { self.advance(); if self.check(TokenType.LPAREN) or self.check(TokenType.LBRACE) { let mut fields = Vec.new<ref Pattern>(); if self.match([TokenType.LPAREN]) { while !self.check(TokenType.RPAREN) and !self.is_at_end() { fields.push(self.parse_pattern()); if !self.match([TokenType.COMMA]) { break } } self.expect(TokenType.RPAREN, "Expected ')'") } else if self.match([TokenType.LBRACE]) { while !self.check(TokenType.RBRACE) and !self.is_at_end() { let ft = self.expect(TokenType.IDENT, "Expected field"); self.expect(TokenType.COLON, "Expected ':'"); let fp = self.parse_pattern(); fields.push(fp); if !self.match([TokenType.COMMA]) { break } } self.expect(TokenType.RBRACE, "Expected '}'") } return alloc(Pattern.EnumPat { name: "", variant: tok.lexeme, fields: fields, span: start_span }) } return alloc(Pattern.IdentPat { name: tok.lexeme, is_mut: false, is_ref: false, span: start_span }) }
+    NUMBER => { self.advance(); return alloc(Pattern.NumberPat { value: tok.value as f64, span: start_span }) }
+    STRING => { self.advance(); return alloc(Pattern.StringPat { value: tok.value as string, span: start_span }) }
+    BOOL => { self.advance(); return alloc(Pattern.BoolPat { value: tok.value as bool, span: start_span }) }
+    NIL => { self.advance(); return alloc(Pattern.NilPat { span: start_span }) }
+    MUT => { self.advance(); return self.parse_pattern() }
+    REF => { self.advance(); return self.parse_pattern() }
+    LBRACKET => { self.advance(); let mut elems = Vec.new<ref Pattern>(); while !self.check(TokenType.RBRACKET) and !self.is_at_end() { elems.push(self.parse_pattern()); if !self.match([TokenType.COMMA]) { break } } self.expect(TokenType.RBRACKET, "Expected ']'"); return alloc(Pattern.ArrayPat { elements: elems, span: start_span }) }
+    _ => { self.error("Unexpected token in pattern: " + tok.lexeme, tok); return alloc(Pattern.Wildcard { span: start_span }) }
+  }
+}
+
+fn Parser.is_stmt_start(self: ref Parser) -> bool {
+  match self.peek().type { FN | LET | CONST | STRUCT | ENUM | TRAIT | IMPL | IMPORT | TYPE | PUB | PRIV | MODULE | USE => true, _ => false }
+}
+
+fn Parser.parse_stmt(self: ref mut Parser) -> ref Stmt {
+  let start_span = self.span(); let tok = self.peek()
+  match tok.type {
+    FN => self.parse_fn_decl(), LET | CONST => self.parse_var_decl(), STRUCT => self.parse_struct_decl(), ENUM => self.parse_enum_decl(),
+    TRAIT => self.parse_trait_decl(), IMPL => self.parse_impl_decl(), IMPORT => self.parse_import(), TYPE => self.parse_type_decl(),
+    PUB | PRIV => self.parse_visibility_stmt(), MODULE => self.parse_module_decl(), USE => self.parse_use_decl(),
+    _ => { let e = self.parse_expr(Precedence.NONE); return alloc(Stmt.ExprStmt { expr: e, span: start_span }) }
+  }
+}
+
+fn Parser.parse_fn_decl(self: ref mut Parser) -> ref Stmt {
+  let start_span = self.span(); self.expect(TokenType.FN, "Expected 'fn'"); let name_tok = self.expect(TokenType.IDENT, "Expected name"); let mut generics = Vec.new<GenericParam>(); if self.match([TokenType.LT]) { generics = self.parse_generics() } self.expect(TokenType.LPAREN, "Expected '('")
+  let params = self.parse_params(); self.expect(TokenType.RPAREN, "Expected ')'"); let mut rt = alloc(TypeExpr.Infer { span: start_span }); if self.match([TokenType.ARROW]) { rt = self.parse_type_expr() } let mut wc = Vec.new<WhereConstraint>(); if self.match([TokenType.WHERE]) { wc = self.parse_where_clause() } let body = self.parse_expr(Precedence.NONE)
+  return alloc(Stmt.FnDecl { name: name_tok.lexeme, params: params, return_type: rt, body: body, is_pub: false, generics: generics, where_clause: wc, span: start_span })
+}
+
+fn Parser.parse_params(self: ref mut Parser) -> Vec<Param> {
+  let mut params = Vec.new<Param>()
+  while !self.check(TokenType.RPAREN) and !self.is_at_end() {
+    let mut is_mut = false; let mut is_ref = false; if self.match([TokenType.MUT]) { is_mut = true } if self.match([TokenType.REF]) { is_ref = true }
+    let name_tok = self.expect(TokenType.IDENT, "Expected param name"); self.expect(TokenType.COLON, "Expected ':'"); let type_expr = self.parse_type_expr(); let mut dv = alloc(Expr.NilLit { span: self.span() }); if self.match([TokenType.EQ]) { dv = self.parse_expr(Precedence.NONE) }
+    params.push(Param { name: name_tok.lexeme, type_expr: type_expr, default_value: dv, is_mut: is_mut, is_ref: is_ref, span: self.span() }); if !self.match([TokenType.COMMA]) { break }
+  }
+  return params
+}
+
+fn Parser.parse_generics(self: ref mut Parser) -> Vec<GenericParam> {
+  let mut generics = Vec.new<GenericParam>()
+  while !self.check(TokenType.GT) and !self.is_at_end() { let name_tok = self.expect(TokenType.IDENT, "Expected generic"); let mut bounds = Vec.new<ref TypeExpr>(); if self.match([TokenType.COLON]) { bounds.push(self.parse_type_expr()) } let mut dt = alloc(TypeExpr.Infer { span: self.span() }); if self.match([TokenType.EQ]) { dt = self.parse_type_expr() } generics.push(GenericParam { name: name_tok.lexeme, bounds: bounds, default_type: dt, span: self.span() }); if !self.match([TokenType.COMMA]) { break } }
+  self.expect(TokenType.GT, "Expected '>'"); return generics
+}
+
+fn Parser.parse_where_clause(self: ref mut Parser) -> Vec<WhereConstraint> {
+  let mut constraints = Vec.new<WhereConstraint>()
+  while !self.is_stmt_start() and !self.check(TokenType.LBRACE) and !self.is_at_end() { let te = self.parse_type_expr(); self.expect(TokenType.COLON, "Expected ':'"); let mut tb = Vec.new<ref TypeExpr>(); tb.push(self.parse_type_expr()); while self.match([TokenType.PLUS]) { tb.push(self.parse_type_expr()) } constraints.push(WhereConstraint { type_expr: te, trait_bounds: tb, span: self.span() }); if !self.match([TokenType.COMMA]) { break } }
+  return constraints
+}
+
+fn Parser.parse_var_decl(self: ref mut Parser) -> ref Stmt {
+  let start_span = self.span(); let is_const = self.match([TokenType.CONST]); if !is_const { self.expect(TokenType.LET, "Expected 'let'") } let mut is_mut = false; if self.match([TokenType.MUT]) { is_mut = true } let name_tok = self.expect(TokenType.IDENT, "Expected name"); let mut te = alloc(TypeExpr.Infer { span: start_span }); if self.match([TokenType.COLON]) { te = self.parse_type_expr() } let mut init = alloc(Expr.NilLit { span: start_span }); if self.match([TokenType.EQ]) { init = self.parse_expr(Precedence.NONE) }
+  return alloc(Stmt.VarDecl { name: name_tok.lexeme, type_expr: te, init: init, is_const: is_const, is_mut: is_mut, span: start_span })
+}
+
+fn Parser.parse_struct_decl(self: ref mut Parser) -> ref Stmt {
+  let start_span = self.span(); self.expect(TokenType.STRUCT, "Expected 'struct'"); let name_tok = self.expect(TokenType.IDENT, "Expected name"); let mut generics = Vec.new<GenericParam>(); if self.match([TokenType.LT]) { generics = self.parse_generics() } self.expect(TokenType.LBRACE, "Expected '{'"); let mut fields = Vec.new<StructField>(); while !self.check(TokenType.RBRACE) and !self.is_at_end() { let mut is_pub = false; if self.match([TokenType.PUB]) { is_pub = true } let ft = self.expect(TokenType.IDENT, "Expected field"); self.expect(TokenType.COLON, "Expected ':'"); let te = self.parse_type_expr(); let mut dv = alloc(Expr.NilLit { span: start_span }); if self.match([TokenType.EQ]) { dv = self.parse_expr(Precedence.NONE) } fields.push(StructField { name: ft.lexeme, type_expr: te, default_value: dv, is_pub: is_pub, span: start_span }); if !self.match([TokenType.COMMA]) { break } } self.expect(TokenType.RBRACE, "Expected '}'")
+  return alloc(Stmt.StructDecl { name: name_tok.lexeme, fields: fields, is_pub: false, generics: generics, span: start_span })
+}
+
+fn Parser.parse_enum_decl(self: ref mut Parser) -> ref Stmt {
+  let start_span = self.span(); self.expect(TokenType.ENUM, "Expected 'enum'"); let name_tok = self.expect(TokenType.IDENT, "Expected name"); let mut generics = Vec.new<GenericParam>(); if self.match([TokenType.LT]) { generics = self.parse_generics() } self.expect(TokenType.LBRACE, "Expected '{'"); let mut variants = Vec.new<EnumVariant>(); while !self.check(TokenType.RBRACE) and !self.is_at_end() { let vt = self.expect(TokenType.IDENT, "Expected variant"); let mut fields = Vec.new<StructField>(); if self.check(TokenType.LPAREN) { self.advance(); while !self.check(TokenType.RPAREN) and !self.is_at_end() { let ft = self.expect(TokenType.IDENT, "Expected field"); self.expect(TokenType.COLON, "Expected ':'"); let te = self.parse_type_expr(); fields.push(StructField { name: ft.lexeme, type_expr: te, default_value: alloc(Expr.NilLit { span: start_span }), is_pub: true, span: start_span }); if !self.match([TokenType.COMMA]) { break } } self.expect(TokenType.RPAREN, "Expected ')'") } let mut disc = alloc(Expr.NilLit { span: start_span }); if self.match([TokenType.EQ]) { disc = self.parse_expr(Precedence.NONE) } variants.push(EnumVariant { name: vt.lexeme, fields: fields, discriminant: disc, span: start_span }); if !self.match([TokenType.COMMA]) { break } } self.expect(TokenType.RBRACE, "Expected '}'")
+  return alloc(Stmt.EnumDecl { name: name_tok.lexeme, variants: variants, is_pub: false, generics: generics, span: start_span })
+}
+
+fn Parser.parse_trait_decl(self: ref mut Parser) -> ref Stmt {
+  let start_span = self.span(); self.expect(TokenType.TRAIT, "Expected 'trait'"); let name_tok = self.expect(TokenType.IDENT, "Expected name"); let mut generics = Vec.new<GenericParam>(); if self.match([TokenType.LT]) { generics = self.parse_generics() } self.expect(TokenType.LBRACE, "Expected '{'"); let mut methods = Vec.new<TraitMethod>(); while !self.check(TokenType.RBRACE) and !self.is_at_end() { let mut is_async = false; if self.match([TokenType.ASYNC]) { is_async = true } self.expect(TokenType.FN, "Expected 'fn'"); let mt = self.expect(TokenType.IDENT, "Expected method"); self.expect(TokenType.LPAREN, "Expected '(') ; let params = self.parse_params(); self.expect(TokenType.RPAREN, "Expected ')'"); let mut rt = alloc(TypeExpr.Infer { span: start_span }); if self.match([TokenType.ARROW]) { rt = self.parse_type_expr() } methods.push(TraitMethod { name: mt.lexeme, params: params, return_type: rt, is_async: is_async, span: start_span }) } self.expect(TokenType.RBRACE, "Expected '}'")
+  return alloc(Stmt.TraitDecl { name: name_tok.lexeme, methods: methods, is_pub: false, generics: generics, span: start_span })
+}
+
+fn Parser.parse_impl_decl(self: ref mut Parser) -> ref Stmt {
+  let start_span = self.span(); self.expect(TokenType.IMPL, "Expected 'impl'"); let mut trait_name = ""; let type_tok = self.expect(TokenType.IDENT, "Expected type"); if self.match([TokenType.FOR]) { trait_name = type_tok.lexeme; let t2 = self.expect(TokenType.IDENT, "Expected type") } let mut generics = Vec.new<GenericParam>(); if self.match([TokenType.LT]) { generics = self.parse_generics() } self.expect(TokenType.LBRACE, "Expected '{'"); let mut methods = Vec.new<ref Stmt>(); while !self.check(TokenType.RBRACE) and !self.is_at_end() { methods.push(self.parse_fn_decl()) } self.expect(TokenType.RBRACE, "Expected '}'")
+  return alloc(Stmt.ImplDecl { trait_name: trait_name, type_name: type_tok.lexeme, methods: methods, generics: generics, span: start_span })
+}
+
+fn Parser.parse_import(self: ref mut Parser) -> ref Stmt {
+  let start_span = self.span(); self.expect(TokenType.IMPORT, "Expected 'import'"); let path_tok = self.expect(TokenType.STRING, "Expected path"); let mut alias = ""; if self.match([TokenType.AS]) { let at = self.expect(TokenType.IDENT, "Expected alias"); alias = at.lexeme } let mut items = Vec.new<string>(); if self.match([TokenType.LBRACE]) { while !self.check(TokenType.RBRACE) and !self.is_at_end() { let it = self.expect(TokenType.IDENT, "Expected item"); items.push(it.lexeme); if !self.match([TokenType.COMMA]) { break } } self.expect(TokenType.RBRACE, "Expected '}'") }
+  return alloc(Stmt.Import { path: path_tok.value as string, alias: alias, items: items, span: start_span })
+}
+
+fn Parser.parse_type_decl(self: ref mut Parser) -> ref Stmt {
+  let start_span = self.span(); self.expect(TokenType.TYPE, "Expected 'type'"); let name_tok = self.expect(TokenType.IDENT, "Expected name"); let mut generics = Vec.new<GenericParam>(); if self.match([TokenType.LT]) { generics = self.parse_generics() } self.expect(TokenType.EQ, "Expected '='"); let te = self.parse_type_expr()
+  return alloc(Stmt.TypeDecl { name: name_tok.lexeme, type_expr: te, generics: generics, span: start_span })
+}
+
+fn Parser.parse_visibility_stmt(self: ref mut Parser) -> ref Stmt { let is_pub = self.match([TokenType.PUB]); if !is_pub { self.advance() } return self.parse_stmt() }
+
+fn Parser.parse_module_decl(self: ref mut Parser) -> ref Stmt {
+  let start_span = self.span(); self.expect(TokenType.MODULE, "Expected 'module'"); let name_tok = self.expect(TokenType.IDENT, "Expected name"); self.expect(TokenType.LBRACE, "Expected '{'"); let mut stmts = Vec.new<ref Stmt>(); while !self.check(TokenType.RBRACE) and !self.is_at_end() { stmts.push(self.parse_stmt()) } self.expect(TokenType.RBRACE, "Expected '}'")
+  return alloc(Stmt.ModuleDecl { name: name_tok.lexeme, stmts: stmts, span: start_span })
+}
+
+fn Parser.parse_use_decl(self: ref mut Parser) -> ref Stmt {
+  let start_span = self.span(); self.expect(TokenType.USE, "Expected 'use'"); let path_tok = self.expect(TokenType.IDENT, "Expected path"); let mut alias = ""; if self.match([TokenType.AS]) { let at = self.expect(TokenType.IDENT, "Expected alias"); alias = at.lexeme }
+  return alloc(Stmt.UseDecl { path: path_tok.lexeme, alias: alias, span: start_span })
+}
+
+fn Parser.parse_type_expr(self: ref mut Parser) -> ref TypeExpr {
+  let start_span = self.span()
+  if self.match([TokenType.AMPERSAND]) { let is_mut = self.match([TokenType.MUT]); let inner = self.parse_type_expr(); return alloc(TypeExpr.Ref { inner: inner, is_mut: is_mut, span: start_span }) }
+  if self.match([TokenType.STAR]) { let is_mut = self.match([TokenType.MUT]); let inner = self.parse_type_expr(); return alloc(TypeExpr.Ptr { inner: inner, is_mut: is_mut, span: start_span }) }
+  if self.match([TokenType.FN]) { self.expect(TokenType.LPAREN, "Expected '(') ; let mut params = Vec.new<ref TypeExpr>(); while !self.check(TokenType.RPAREN) and !self.is_at_end() { params.push(self.parse_type_expr()); if !self.match([TokenType.COMMA]) { break } } self.expect(TokenType.RPAREN, "Expected ')'"); let mut ret = alloc(TypeExpr.Infer { span: start_span }); if self.match([TokenType.ARROW]) { ret = self.parse_type_expr() } return alloc(TypeExpr.Fn { params: params, ret: ret, span: start_span }) }
+  if self.match([TokenType.LBRACKET]) { let elem = self.parse_type_expr(); if self.match([TokenType.SEMICOLON]) { let size = self.parse_expr(Precedence.NONE); self.expect(TokenType.RBRACKET, "Expected ']'"); return alloc(TypeExpr.Array { elem: elem, size: size, span: start_span }) } self.expect(TokenType.RBRACKET, "Expected ']'"); return alloc(TypeExpr.Slice { elem: elem, span: start_span }) }
+  if self.match([TokenType.LPAREN]) { let mut elems = Vec.new<ref TypeExpr>(); while !self.check(TokenType.RPAREN) and !self.is_at_end() { elems.push(self.parse_type_expr()); if !self.match([TokenType.COMMA]) { break } } self.expect(TokenType.RPAREN, "Expected ')'"); return alloc(TypeExpr.Tuple { elems: elems, span: start_span }) }
+  let name_tok = self.expect(TokenType.IDENT, "Expected type name"); let name = name_tok.lexeme; let mut args = Vec.new<ref TypeExpr>(); if self.match([TokenType.LT]) { while !self.check(TokenType.GT) and !self.is_at_end() { args.push(self.parse_type_expr()); if !self.match([TokenType.COMMA]) { break } } self.expect(TokenType.GT, "Expected '>'") }
+  return alloc(TypeExpr.Named { name: name, args: args, span: start_span })
+}
+
+fn Parser.token_to_binary_op(self: ref Parser, type: TokenType) -> BinaryOp {
+  match type { PLUS => BinaryOp.ADD, MINUS => BinaryOp.SUB, STAR => BinaryOp.MUL, SLASH => BinaryOp.DIV, PERCENT => BinaryOp.MOD, POW => BinaryOp.POW, EQEQ => BinaryOp.EQ, BANGEQ => BinaryOp.NE, LT => BinaryOp.LT, GT => BinaryOp.GT, LTEQ => BinaryOp.LE, GTEQ => BinaryOp.GE, AND => BinaryOp.AND, OR => BinaryOp.OR, AMPERSAND => BinaryOp.BIT_AND, PIPE => BinaryOp.BIT_OR, CARET => BinaryOp.BIT_XOR, SHL => BinaryOp.BIT_SHL, SHR => BinaryOp.BIT_SHR, EQ => BinaryOp.ASSIGN, PLUSEQ => BinaryOp.ADD, MINUSEQ => BinaryOp.SUB, STAREQ => BinaryOp.MUL, SLASHEQ => BinaryOp.DIV, PERCENTEQ => BinaryOp.MOD, DOTDOT => BinaryOp.RANGE, DOTDOTDOT => BinaryOp.RANGE_INCL, _ => BinaryOp.ADD }
+}
+
+fn Parser.next_precedence(self: ref Parser, prec: Precedence) -> Precedence {
+  match prec { Precedence.ASSIGNMENT => Precedence.OR, Precedence.OR => Precedence.AND, Precedence.AND => Precedence.EQUALITY, Precedence.EQUALITY => Precedence.COMPARISON, Precedence.COMPARISON => Precedence.RANGE, Precedence.RANGE => Precedence.TERM, Precedence.TERM => Precedence.FACTOR, Precedence.FACTOR => Precedence.POWER, Precedence.POWER => Precedence.UNARY, Precedence.UNARY => Precedence.CALL, Precedence.CALL => Precedence.PRIMARY, _ => Precedence.NONE }
+}
+
+fn Parser.merge_span(self: ref Parser, a: Span, b: Span) -> Span { return Span { file: a.file, start_line: a.start_line, start_col: a.start_col, end_line: b.end_line, end_col: b.end_col } }
+
+pub fn parse(source: string, file: string) -> Program {
+  let tokens = tokenize(source, file); let mut parser = Parser.new(tokens, file); let mut stmts = Vec.new<ref Stmt>()
+  while !parser.is_at_end() { if parser.check(TokenType.NEWLINE) or parser.check(TokenType.SEMICOLON) { parser.advance(); continue } stmts.push(parser.parse_stmt()) }
+  return Program { stmts: stmts, span: parser.span() }
+}
+
+pub fn parse_expr(source: string, file: string) -> ref Expr { let tokens = tokenize(source, file); let mut parser = Parser.new(tokens, file); return parser.parse_expr(Precedence.NONE) }
