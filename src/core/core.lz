@@ -1,0 +1,94 @@
+// core.lz - Shared types and utilities for Luazi self-hosted compiler
+// This file is imported by tokenizer.lz, parser.lz, and typechecker.lz
+
+// ============================================================================
+// SOURCE LOCATION
+// ============================================================================
+
+pub struct Span {
+  file: string,
+  start_line: int,
+  start_col: int,
+  end_line: int,
+  end_col: int,
+}
+
+pub fn Span.new(file: string, line: int, col: int) -> Span {
+  return Span { 
+    file: file, 
+    start_line: line, 
+    start_col: col, 
+    end_line: line, 
+    end_col: col 
+  }
+}
+
+pub fn Span.merge(a: Span, b: Span) -> Span {
+  return Span {
+    file: a.file,
+    start_line: a.start_line,
+    start_col: a.start_col,
+    end_line: b.end_line,
+    end_col: b.end_col,
+  }
+}
+
+// ============================================================================
+// STRING BUILDER
+// ============================================================================
+
+pub struct StringBuilder {
+  parts: Vec,
+}
+
+pub fn StringBuilder.new() -> StringBuilder {
+  return StringBuilder { parts: Vec.new() }
+}
+
+pub fn StringBuilder.append(self: ref mut StringBuilder, s: string) -> nil {
+  self.parts.push(s)
+}
+
+pub fn StringBuilder.to_string(self: ref StringBuilder) -> string {
+  return self.parts.join("")
+}
+
+// ============================================================================
+// CHARACTER UTILITIES
+// ============================================================================
+
+pub fn is_digit(c: char) -> bool { 
+  return c >= '0' and c <= '9' 
+}
+
+pub fn is_alpha(c: char) -> bool { 
+  return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') 
+}
+
+pub fn is_alphanumeric(c: char) -> bool { 
+  return is_alpha(c) or is_digit(c) 
+}
+
+pub fn is_whitespace(c: char) -> bool { 
+  return c == ' ' or c == '\t' or c == '\r' or c == '\n' 
+}
+
+// ============================================================================
+// HEAP ALLOCATION (for AST nodes)
+// ============================================================================
+
+// Simple bump allocator for AST nodes
+pub struct Arena {
+  data: Vec,
+  used: number,
+}
+
+pub fn Arena.new() -> Arena {
+  return Arena { data: Vec.new(), used: 0 }
+}
+
+pub fn alloc(size: number) -> ref any {
+  // In a real implementation, this would allocate from a memory pool
+  // For now, we rely on the runtime's garbage collector
+  return nil
+}
