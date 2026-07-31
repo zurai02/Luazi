@@ -1,0 +1,136 @@
+test_tokenizer.lz
+// test_tokenizer.lz - Test suite for the self-hosted tokenizer
+import core
+import tokenizer
+
+fn test_basic_tokens() -> bool {
+  let source = "let x = 42"
+  let tokens = tokenizer.tokenize(source, "test")
+
+  guard tokens.len() == 5 else { return false }
+  guard tokens[0].type == TokenType.LET else { return false }
+  guard tokens[1].type == TokenType.IDENT else { return false }
+  guard tokens[1].lexeme == "x" else { return false }
+  guard tokens[2].type == TokenType.EQ else { return false }
+  guard tokens[3].type == TokenType.NUMBER else { return false }
+  guard tokens[3].value == 42 else { return false }
+  guard tokens[4].type == TokenType.EOF else { return false }
+
+  return true
+}
+
+fn test_string_literal() -> bool {
+  let source = "\"hello world\""
+  let tokens = tokenizer.tokenize(source, "test")
+
+  guard tokens.len() == 2 else { return false }
+  guard tokens[0].type == TokenType.STRING else { return false }
+  guard tokens[0].value == "hello world" else { return false }
+
+  return true
+}
+
+fn test_indentation() -> bool {
+  let source = "if true:\n    print(1)\n    print(2)\n"
+  let tokens = tokenizer.tokenize(source, "test")
+
+  // Should have INDENT and DEDENT tokens
+  let has_indent = false
+  let has_dedent = false
+  for tok in tokens {
+    if tok.type == TokenType.INDENT { has_indent = true }
+    if tok.type == TokenType.DEDENT { has_dedent = true }
+  }
+
+  return has_indent and has_dedent
+}
+
+fn test_comments() -> bool {
+  let source = "let x = 1 // this is a comment\nlet y = 2"
+  let tokens = tokenizer.tokenize(source, "test")
+
+  // Comments should be skipped
+  guard tokens.len() == 8 else { return false }
+
+  return true
+}
+
+fn test_all_operators() -> bool {
+  let source = "+ - * / % ** == != < > <= >= && || & | ^ << >>"
+  let tokens = tokenizer.tokenize(source, "test")
+
+  let expected = [
+    TokenType.PLUS, TokenType.MINUS, TokenType.STAR, TokenType.SLASH,
+    TokenType.PERCENT, TokenType.POW,
+    TokenType.EQEQ, TokenType.BANGEQ, TokenType.LT, TokenType.GT,
+    TokenType.LTEQ, TokenType.GTEQ, TokenType.AND, TokenType.OR,
+    TokenType.AMPERSAND, TokenType.PIPE, TokenType.CARET,
+    TokenType.SHL, TokenType.SHR, TokenType.EOF
+  ]
+
+  guard tokens.len() == expected.len() else { return false }
+  for i in 0..expected.len() {
+    guard tokens[i].type == expected[i] else { return false }
+  }
+
+  return true
+}
+
+fn test_keywords() -> bool {
+  let source = "fn let const mut ref return if else while for in match enum struct trait impl import as pub priv type where break continue defer await async yield"
+  let tokens = tokenizer.tokenize(source, "test")
+
+  let expected = [
+    TokenType.FN, TokenType.LET, TokenType.CONST, TokenType.MUT, TokenType.REF,
+    TokenType.RETURN, TokenType.IF, TokenType.ELSE, TokenType.WHILE, TokenType.FOR,
+    TokenType.IN, TokenType.MATCH, TokenType.ENUM, TokenType.STRUCT, TokenType.TRAIT,
+    TokenType.IMPL, TokenType.IMPORT, TokenType.AS, TokenType.PUB, TokenType.PRIV,
+    TokenType.TYPE, TokenType.WHERE, TokenType.BREAK, TokenType.CONTINUE,
+    TokenType.DEFER, TokenType.AWAIT, TokenType.ASYNC, TokenType.YIELD, TokenType.EOF
+  ]
+
+  guard tokens.len() == expected.len() else { return false }
+  for i in 0..expected.len() {
+    guard tokens[i].type == expected[i] else { return false }
+  }
+
+  return true
+}
+
+fn main() -> nil {
+  println("=== Tokenizer Test Suite ===")
+  println()
+
+  let tests = [
+    ("basic tokens", test_basic_tokens),
+    ("string literal", test_string_literal),
+    ("indentation", test_indentation),
+    ("comments", test_comments),
+    ("operators", test_all_operators),
+    ("keywords", test_keywords),
+  ]
+
+  let passed = 0
+  let failed = 0
+
+  for test in tests {
+    let name = test._0
+    let fn = test._1
+
+    print("Testing " + name + "... ")
+    if fn() {
+      println("PASS")
+      passed = passed + 1
+    } else {
+      println("FAIL")
+      failed = failed + 1
+    }
+  }
+
+  println()
+  println("Results: " + passed + " passed, " + failed + " failed")
+
+  if failed > 0 {
+    panic("Some tests failed!")
+  }
+}
