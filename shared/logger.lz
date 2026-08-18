@@ -1,0 +1,115 @@
+// shared/logger.lz
+// Centralized logging with levels, colors, and formatting
+
+import { LogLevel } from './types'
+
+struct Logger {
+  private static instance: Logger
+  private level: LogLevel = 'info'
+  private useColors: boolean = true
+  private timestamps: boolean = true
+  private prefix: string = '[Luazi]'
+
+  private readonly LEVELS: Record<LogLevel, number> = {
+    debug: 0, info: 1, warn: 2, error: 3
+  }
+
+  private readonly COLORS: Record<LogLevel, string> = {
+    debug: '[36m', info: '[32m',
+    warn: '[33m', error: '[31m',
+  }
+
+  private readonly RESET = '[0m'
+
+  private constructor() {}
+
+  static fn getInstance() -> Logger {
+    if !Logger.instance {
+      Logger.instance = new Logger()
+    }
+    return Logger.instance
+  }
+
+  fn configure(options: { level?: LogLevel; colors?: boolean; timestamps?: boolean; prefix?: string }) -> void {
+    if options.level { self.level = options.level }
+    if options.colors != undefined { self.useColors = options.colors }
+    if options.timestamps != undefined { self.timestamps = options.timestamps }
+    if options.prefix { self.prefix = options.prefix }
+  }
+
+  private fn shouldLog(level: LogLevel) -> boolean {
+    return self.LEVELS[level] >= self.LEVELS[self.level]
+  }
+
+  private fn format(level: LogLevel, message: string) -> string {
+    let parts: string[] = []
+    if self.timestamps {
+      parts.push(`[${new Date().toISOString()}]`)
+    }
+    parts.push(self.prefix)
+    let levelStr = level.toUpperCase().padEnd(5)
+    if self.useColors {
+      parts.push(`${self.COLORS[level]}${levelStr}${self.RESET}`)
+    } else {
+      parts.push(levelStr)
+    }
+    parts.push(message)
+    return parts.join(' ')
+  }
+
+  fn debug(message: string, ...args: any[]) -> void {
+    if self.shouldLog('debug') {
+      print(self.format('debug', message), ...args)
+    }
+  }
+
+  fn info(message: string, ...args: any[]) -> void {
+    if self.shouldLog('info') {
+      print(self.format('info', message), ...args)
+    }
+  }
+
+  fn warn(message: string, ...args: any[]) -> void {
+    if self.shouldLog('warn') {
+      print(self.format('warn', message), ...args)
+    }
+  }
+
+  fn error(message: string, ...args: any[]) -> void {
+    if self.shouldLog('error') {
+      print(self.format('error', message), ...args)
+    }
+  }
+
+  fn success(message: string) -> void {
+    if self.shouldLog('info') {
+      let green = self.useColors ? '[32m✓[0m' : '✓'
+      print(self.format('info', `${green} ${message}`))
+    }
+  }
+
+  fn failure(message: string) -> void {
+    if self.shouldLog('error') {
+      let red = self.useColors ? '[31m✗[0m' : '✗'
+      print(self.format('error', `${red} ${message}`))
+    }
+  }
+
+  fn group(label: string) -> void {
+    if self.useColors {
+      print(`[1m[34m${label}[0m`)
+    } else {
+      print(label)
+    }
+  }
+
+  fn table(data: any[]) -> void {
+    print(data)
+  }
+
+  fn divider() -> void {
+    print('─'.repeat(60))
+  }
+}
+
+let logger = Logger.getInstance()
