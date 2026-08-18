@@ -1,527 +1,607 @@
-// Luazi CLI
-// Command-line interface for the Luazi compiler and runtime
+// cli/cli.lz
+// Main entry point with full Client Dictionary + Backend + Middleware architecture
 
-import * as fs from 'fs';
-import * as path from 'path';
-import { parse } from '../core/parser';
-import { emit } from '../core/emitter';
-import { typeCheck } from '../core/typechecker';
-import { LuaziVM } from '../core/vm';
+import * as fs from 'fs'
+import * as path from 'path'
+import { Command } from 'commander'
+import { CliOptions, Target, LogLevel } from '../shared/types'
+import { logger } from '../shared/logger'
+import { ClientDictionary, clientDictionary } from '../client/client'
+import { Backend, backend } from '../backend/backend'
+import { MiddlewareOrchestrator, createOrchestrator } from '../middleware/middleware'
+import { LuaziRepl } from '../repl/repl'
 
-interface CliOptions {
-  input: string;
-  output?: string;
-  target: 'bytecode' | 'wat' | 'cpp' | 'csharp' | 'run';
-  optimize: number;
-  dumpAst: boolean;
-  dumpBytecode: boolean;
-  noTypeCheck: boolean;
-  verbose: boolean;
-  wasmPath?: string;
+const VERSION = '1.0.0-alpha.2'
+const PROGRAM_NAME = 'luazi'
+
+struct LuaziCli {
+  clientDict: ClientDictionary
+  backend: Backend
+  orchestrator: MiddlewareOrchestrator
+  clientId: string
 }
 
-function printHelp(): void {
-  console.log(`
-Luazi Compiler & Runtime
-Usage: luazi [options] <input>
-
-Options:
-  -o, --output <file>    Output file (default: stdout or input with appropriate extension)
-  -t, --target <target>  Compilation target: bytecode, wat, cpp, csharp, run (default: run)
-  -O, --optimize <level> Optimization level: 0-3 (default: 0)
-  --dump-ast             Print AST to stdout
-  --dump-bytecode        Print bytecode disassembly to stdout
-  --no-typecheck         Skip type checking
-  -v, --verbose          Verbose output
-  --wasm <path>          Path to WASM runtime module
-  -h, --help             Show this help message
-
-Examples:
-  luazi script.lz                    # Run script
-  luazi -t bytecode script.lz        # Compile to bytecode
-  luazi -t wat script.lz             # Compile to WebAssembly text
-  luazi -O2 script.lz                # Run with optimization level 2
-`);
+fn newLuaziCli() -> LuaziCli {
+  let cd = clientDictionary
+  let be = backend
+  let orch = createOrchestrator(cd, be)
+  let cid = cd.registerClient('cli', VERSION, [
+    'compile', 'execute', 'disassemble', 'format', 'benchmark', 'check', 'stats'
+  ])
+  return LuaziCli {
+    clientDict: cd,
+    backend: be,
+    orchestrator: orch,
+    clientId: cid
+  }
 }
 
-function parseArgs(args: string[]): CliOptions {
-  const options: CliOptions = {
-    input: '',
-    target: 'run',
-    optimize: 0,
-    dumpAst: false,
-    dumpBytecode: false,
-    noTypeCheck: false,
-    verbose: false
-  };
+async fn run(self: LuaziCli, args: string[]) -> void {
+  let program = new Command()
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    switch (arg) {
-      case '-o':
-      case '--output':
-        options.output = args[++i];
-        break;
-      case '-t':
-      case '--target':
-        options.target = args[++i] as CliOptions['target'];
-        break;
-      case '-O':
-      case '--optimize':
-        options.optimize = parseInt(args[++i]);
-        break;
-      case '--dump-ast':
-        options.dumpAst = true;
-        break;
-      case '--dump-bytecode':
-        options.dumpBytecode = true;
-        break;
-      case '--no-typecheck':
-        options.noTypeCheck = true;
-        break;
-      case '-v':
-      case '--verbose':
-        options.verbose = true;
-        break;
-      case '--wasm':
-        options.wasmPath = args[++i];
-        break;
-      case '-h':
-      case '--help':
-        printHelp();
-        process.exit(0);
-        break;
-      default:
-        if (!arg.startsWith('-')) {
-          options.input = arg;
+  program
+    .name(PROGRAM_NAME)
+    .description('Luazi Compiler & Runtime - Enhanced Edition')
+    .version(VERSION, '-v, --version', 'Display version')
+
+  program.option('--no-color', 'Disable colored output')
+  program.option('--log-level <level>', 'Log level: debug, info, warn, error', 'info')
+
+  // Run command
+  program
+    .command('run <file>')
+    .description('Run a Luazi source file')
+    .option('-O, --optimize <level>', 'Optimization level (0-3)', '0')
+    .option('--no-typecheck', 'Skip type checking')
+    .option('--wasm <path>', 'Path to WASM runtime module')
+    .option('--dump-ast', 'Print AST to stdout')
+    .option('--dump-bytecode', 'Print bytecode disassembly')
+    .option('--timeout <ms>', 'Execution timeout in ms', '30000')
+    .action(async (file: string, options: any) => {
+      await self.cmdRun(file, options)
+    })
+
+  // Compile command
+  program
+    .command('compile <file>')
+    .description('Compile a Luazi source file')
+    .option('-o, --output <file>', 'Output file')
+    .option('-t, --target <target>', 'Target: bytecode, wat, cpp, csharp, js', 'bytecode')
+    .option('-O, --optimize <level>', 'Optimization level (0-3)', '0')
+    .option('--strip', 'Strip debug symbols')
+    .option('--source-map', 'Generate source map')
+    .option('--dump-ast', 'Print AST')
+    .option('--dump-bytecode', 'Print bytecode disassembly')
+    .option('--no-typecheck', 'Skip type checking')
+    .action(async (file: string, options: any) => {
+      await self.cmdCompile(file, options)
+    })
+
+  // Execute command
+  program
+    .command('exec <file>')
+    .description('Execute a compiled bytecode file')
+    .option('--wasm <path>', 'Path to WASM runtime module')
+    .option('--timeout <ms>', 'Execution timeout in ms', '30000')
+    .action(async (file: string, options: any) => {
+      await self.cmdExecute(file, options)
+    })
+
+  // Check command
+  program
+    .command('check <file>')
+    .description('Type-check a Luazi source file without compiling')
+    .option('--strict', 'Use strict type checking')
+    .action(async (file: string, options: any) => {
+      await self.cmdCheck(file, options)
+    })
+
+  // Format command
+  program
+    .command('fmt <file>')
+    .description('Format a Luazi source file')
+    .option('-i, --in-place', 'Format in place')
+    .option('--indent <size>', 'Indent size', '2')
+    .option('--tabs', 'Use tabs instead of spaces')
+    .action(async (file: string, options: any) => {
+      await self.cmdFormat(file, options)
+    })
+
+  // Disassemble command
+  program
+    .command('disasm <file>')
+    .description('Disassemble a Luazi bytecode file')
+    .option('--no-constants', 'Hide constants table')
+    .option('--no-comments', 'Hide instruction comments')
+    .action(async (file: string, options: any) => {
+      await self.cmdDisassemble(file, options)
+    })
+
+  // Benchmark command
+  program
+    .command('bench <file>')
+    .description('Benchmark a Luazi source file')
+    .option('-n, --iterations <n>', 'Number of iterations', '1000')
+    .option('-O, --optimize <level>', 'Optimization level', '2')
+    .action(async (file: string, options: any) => {
+      await self.cmdBenchmark(file, options)
+    })
+
+  // REPL command
+  program
+    .command('repl')
+    .description('Start interactive Luazi REPL')
+    .action(async () => {
+      await self.cmdRepl()
+    })
+
+  // Stats command
+  program
+    .command('stats')
+    .description('Show backend and client statistics')
+    .option('--json', 'Output as JSON')
+    .action(async (options: any) => {
+      await self.cmdStats(options)
+    })
+
+  // Clean command
+  program
+    .command('clean')
+    .description('Clear compilation cache')
+    .action(async () => {
+      await self.cmdClean()
+    })
+
+  // Init command
+  program
+    .command('init [name]')
+    .description('Initialize a new Luazi project')
+    .option('--template <type>', 'Project template: basic, lib, app', 'basic')
+    .action(async (name: string = 'my-luazi-project', options: any) => {
+      await self.cmdInit(name, options)
+    })
+
+  program.parse(args)
+}
+
+// ─── Command Implementations ───────────────────────────────────
+
+async fn cmdRun(self: LuaziCli, file: string, options: any) -> void {
+  self.configureLogging(options)
+  logger.info(`Running: ${file}`)
+
+  try {
+    let source = fs.readFileSync(file, 'utf-8')
+
+    let compileResult = await self.orchestrator.handleRequest(self.clientId, 'compile', {
+      source: source,
+      input: file,
+      target: 'run',
+      optimize: parseInt(options.optimize) || 0,
+      noTypeCheck: options.noTypecheck || false,
+      dumpAst: options.dumpAst || false,
+      dumpBytecode: options.dumpBytecode || false
+    })
+
+    if !compileResult.success {
+      logger.failure(`Compilation failed: ${compileResult.error}`)
+      process.exit(1)
+    }
+
+    if options.dumpAst && compileResult.data?.ast {
+      print(JSON.stringify(compileResult.data.ast, null, 2))
+      return
+    }
+
+    if options.dumpBytecode && compileResult.data?.bytecode {
+      let disasmResult = await self.orchestrator.handleRequest(self.clientId, 'disassemble', {
+        bytecode: compileResult.data.bytecode
+      })
+      if disasmResult.success {
+        self.printDisassembly(disasmResult.data, true)
+      }
+      return
+    }
+
+    if compileResult.data?.bytecode {
+      let execResult = await self.orchestrator.handleRequest(self.clientId, 'execute', {
+        bytecode: compileResult.data.bytecode,
+        wasmPath: options.wasm,
+        timeoutMs: parseInt(options.timeout) || 30000
+      })
+
+      if execResult.success {
+        if execResult.data?.value != undefined {
+          print(execResult.data.value)
         }
-        break;
-    }
-  }
-
-  if (!options.input) {
-    console.error('Error: No input file specified');
-    printHelp();
-    process.exit(1);
-  }
-
-  return options;
-}
-
-function formatBytecode(bytecode: Uint8Array): string {
-  const lines: string[] = [];
-  const view = new DataView(bytecode.buffer, bytecode.byteOffset, bytecode.byteLength);
-
-  // Header
-  lines.push('=== HEADER ===');
-  lines.push(`Magic: 0x${view.getUint32(0, true).toString(16).toUpperCase().padStart(8, '0')}`);
-  lines.push(`Version: ${view.getUint8(4)}`);
-  lines.push(`Flags: ${view.getUint8(5)}`);
-  lines.push(`Constants: ${view.getUint16(6, true)}`);
-  lines.push(`Protos: ${view.getUint16(8, true)}`);
-  lines.push(`Code Size: ${view.getUint32(10, true)} bytes`);
-
-  // Find code section start
-  let offset = 12;
-  const constCount = view.getUint16(6, true);
-  const protoCount = view.getUint16(8, true);
-
-  // Skip constants
-  for (let i = 0; i < constCount; i++) {
-    const type = view.getUint8(offset++);
-    if (type === 1) offset += 8;
-    else if (type === 3) {
-      const len = view.getUint32(offset, true);
-      offset += 4 + len;
-    }
-  }
-
-  // Skip proto table
-  offset += protoCount * 8;
-
-  // Skip proto data
-  for (let i = 0; i < protoCount; i++) {
-    const pConsts = view.getUint32(offset, true);
-    offset += 4;
-    const pInsts = view.getUint32(offset, true);
-    offset += 4;
-    const pUpvals = view.getUint32(offset, true);
-    offset += 4;
-    const pParams = view.getUint32(offset, true);
-    offset += 4;
-
-    for (let j = 0; j < pConsts; j++) {
-      const type = view.getUint8(offset++);
-      if (type === 1) offset += 8;
-      else if (type === 3) {
-        const slen = view.getUint32(offset, true);
-        offset += 4 + slen;
-      }
-    }
-
-    offset += pInsts * 4 + pUpvals * 4;
-
-    for (let j = 0; j < pUpvals; j++) {
-      offset += 4;
-      const nameLen = view.getUint8(offset++);
-      offset += nameLen;
-    }
-  }
-
-  // Disassemble instructions
-  lines.push('');
-  lines.push('=== INSTRUCTIONS ===');
-  const codeSize = view.getUint32(10, true);
-  const codeStart = offset;
-
-  const opNames: string[] = [
-    'NOP', 'LOADK', 'LOADNIL', 'LOADBOOL', 'LOADINT', 'MOVE',
-    'GETGLOBAL', 'SETGLOBAL', 'GETUPVAL', 'SETUPVAL', 'GETTABLE',
-    'SETTABLE', 'NEWTABLE', 'SELF', 'ADD', 'SUB', 'MUL', 'DIV',
-    'MOD', 'POW', 'UNM', 'NOT', 'LEN', 'CONCAT', 'JMP', 'EQ',
-    'LT', 'LE', 'TEST', 'TESTSET', 'CALL', 'TAILCALL', 'RETURN',
-    'FORLOOP', 'FORPREP', 'TFORLOOP', 'SETLIST', 'CLOSE', 'CLOSURE',
-    'VARARG', 'TYPECHECK', 'ASSERT', 'ASYNC', 'AWAIT', 'SIMD_ADD',
-    'SIMD_MUL', 'SIMD_DOT', 'GUARD', 'DEFER', 'MATCH'
-  ];
-
-  for (let i = 0; i < codeSize / 4; i++) {
-    const inst = view.getUint32(codeStart + i * 4, true);
-    const op = inst & 0x3F;
-    const a = (inst >> 6) & 0xFF;
-    const b = (inst >> 14) & 0x1FF;
-    const c = (inst >> 23) & 0x1FF;
-    const sbx = (inst >> 14) & 0x3FFFF;
-    const signedSbx = sbx >= 0x20000 ? sbx - 0x40000 : sbx;
-
-    const opName = op < opNames.length ? opNames[op] : `UNKNOWN(${op})`;
-    lines.push(`${i.toString().padStart(4, '0')}: ${opName.padEnd(12)} A=${a} B=${b} C=${c} sBx=${signedSbx}`);
-  }
-
-  return lines.join('\n');
-}
-
-async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-
-  if (args.length === 0) {
-    printHelp();
-    process.exit(1);
-  }
-
-  const options = parseArgs(args);
-
-  if (options.verbose) {
-    console.log(`Input: ${options.input}`);
-    console.log(`Target: ${options.target}`);
-    console.log(`Optimize: ${options.optimize}`);
-  }
-
-  // Read source
-  let source: string;
-  try {
-    source = fs.readFileSync(options.input, 'utf-8');
-  } catch (e) {
-    console.error(`Error: Cannot read file ${options.input}`);
-    process.exit(1);
-  }
-
-  if (options.verbose) {
-    console.log(`Source size: ${source.length} bytes`);
-  }
-
-  // Parse
-  let ast;
-  try {
-    ast = parse(source, options.input);
-    if (options.verbose) {
-      console.log('Parsing: OK');
-    }
-  } catch (e) {
-    console.error(`Parse error: ${e}`);
-    process.exit(1);
-  }
-
-  if (options.dumpAst) {
-    console.log(JSON.stringify(ast, null, 2));
-    return;
-  }
-
-  // Type check
-  if (!options.noTypeCheck) {
-    const errors = typeCheck(ast);
-    if (errors.length > 0) {
-      for (const err of errors) {
-        console.error(`Type error: ${err.message}`);
-      }
-      if (errors.some(e => e.message.includes('mismatch'))) {
-        process.exit(1);
-      }
-    }
-    if (options.verbose) {
-      console.log(`Type check: ${errors.length} errors`);
-    }
-  }
-
-  // Compile
-  let bytecode: Uint8Array;
-  try {
-    bytecode = emit(ast);
-    if (options.verbose) {
-      console.log(`Bytecode size: ${bytecode.length} bytes`);
-    }
-  } catch (e) {
-    console.error(`Compilation error: ${e}`);
-    process.exit(1);
-  }
-
-  if (options.dumpBytecode) {
-    console.log(formatBytecode(bytecode));
-    return;
-  }
-
-  // Output or execute
-  switch (options.target) {
-    case 'bytecode': {
-      const outputPath = options.output || options.input.replace(/\.lz$/, '.lzc');
-      fs.writeFileSync(outputPath, bytecode);
-      console.log(`Bytecode written to: ${outputPath}`);
-      break;
-    }
-
-    case 'wat':
-      console.error('WAT target not yet implemented');
-      process.exit(1);
-      break;
-
-    case 'cpp':
-      console.error('C++ target not yet implemented');
-      process.exit(1);
-      break;
-
-    case 'csharp':
-      console.error('C# target not yet implemented');
-      process.exit(1);
-      break;
-
-    case 'run': {
-      const vm = new LuaziVM();
-
-      if (options.wasmPath) {
-        try {
-          const wasmBuffer = fs.readFileSync(options.wasmPath);
-          await vm.initialize(wasmBuffer);
-        } catch (e) {
-          console.warn(`WASM load failed, using JS fallback: ${e}`);
-          await vm.initialize();
-        }
+        logger.success(`Completed in ${execResult.processingTimeMs.toFixed(2)}ms`)
       } else {
-        await vm.initialize();
+        logger.failure(`Execution failed: ${execResult.error}`)
+        process.exit(1)
       }
-
-      try {
-        const result = vm.execute(bytecode);
-        console.log(result);
-      } catch (e) {
-        console.error(`Runtime error: ${e}`);
-        process.exit(1);
-      }
-      break;
     }
 
-    default:
-      console.error(`Unknown target: ${options.target}`);
-      process.exit(1);
+  } catch (e: any) {
+    logger.failure(`Error: ${e.message}`)
+    process.exit(1)
   }
+}
+
+async fn cmdCompile(self: LuaziCli, file: string, options: any) -> void {
+  self.configureLogging(options)
+  logger.info(`Compiling: ${file} → ${options.target}`)
+
+  try {
+    let source = fs.readFileSync(file, 'utf-8')
+
+    let result = await self.orchestrator.handleRequest(self.clientId, 'compile', {
+      source: source,
+      input: file,
+      target: options.target,
+      optimize: parseInt(options.optimize) || 0,
+      noTypeCheck: options.noTypecheck || false,
+      stripDebug: options.strip || false,
+      sourceMap: options.sourceMap || false,
+      dumpAst: options.dumpAst || false,
+      dumpBytecode: options.dumpBytecode || false
+    })
+
+    if !result.success {
+      logger.failure(`Compilation failed: ${result.error}`)
+      process.exit(1)
+    }
+
+    if options.dumpAst && result.data?.ast {
+      print(JSON.stringify(result.data.ast, null, 2))
+      return
+    }
+
+    if options.dumpBytecode && result.data?.bytecode {
+      let disasmResult = await self.orchestrator.handleRequest(self.clientId, 'disassemble', {
+        bytecode: result.data.bytecode
+      })
+      if disasmResult.success {
+        self.printDisassembly(disasmResult.data, true)
+      }
+      return
+    }
+
+    if result.data?.bytecode {
+      let outputFile = options.output || file.replace(/\.lz$/, self.getExtension(options.target))
+      fs.writeFileSync(outputFile, result.data.bytecode)
+      logger.success(`Compiled to ${outputFile}`)
+
+      if result.data.metadata {
+        let m = result.data.metadata
+        logger.info(`  Source: ${m.sourceSize} bytes → Bytecode: ${m.bytecodeSize} bytes`)
+        logger.info(`  Constants: ${m.constantCount} | Instructions: ${m.instructionCount}`)
+      }
+    }
+
+  } catch (e: any) {
+    logger.failure(`Error: ${e.message}`)
+    process.exit(1)
+  }
+}
+
+async fn cmdExecute(self: LuaziCli, file: string, options: any) -> void {
+  logger.info(`Executing: ${file}`)
+
+  try {
+    let bytecode = fs.readFileSync(file)
+
+    let result = await self.orchestrator.handleRequest(self.clientId, 'execute', {
+      bytecode: new Uint8Array(bytecode),
+      wasmPath: options.wasm,
+      timeoutMs: parseInt(options.timeout) || 30000
+    })
+
+    if result.success {
+      if result.data?.value != undefined {
+        print(result.data.value)
+      }
+      logger.success(`Completed in ${result.processingTimeMs.toFixed(2)}ms`)
+    } else {
+      logger.failure(`Execution failed: ${result.error}`)
+      process.exit(1)
+    }
+
+  } catch (e: any) {
+    logger.failure(`Error: ${e.message}`)
+    process.exit(1)
+  }
+}
+
+async fn cmdCheck(self: LuaziCli, file: string, options: any) -> void {
+  logger.info(`Type-checking: ${file}`)
+
+  try {
+    let source = fs.readFileSync(file, 'utf-8')
+
+    let result = await self.orchestrator.handleRequest(self.clientId, 'check', {
+      source: source,
+      input: file
+    })
+
+    if result.success {
+      logger.success('Type check passed')
+      if result.data?.warnings?.length > 0 {
+        logger.warn(`${result.data.warnings.length} warning(s)`)
+        for w in result.data.warnings {
+          print(`  ⚠ ${w.message}`)
+        }
+      }
+    } else {
+      logger.failure('Type check failed')
+      if result.data?.errors {
+        for err in result.data.errors {
+          let loc = err.line ? `:${err.line}${err.column ? `:${err.column}` : ''}` : ''
+          print(`  ✗ ${err.file || file}${loc} - ${err.message}`)
+        }
+      }
+      process.exit(1)
+    }
+
+  } catch (e: any) {
+    logger.failure(`Error: ${e.message}`)
+    process.exit(1)
+  }
+}
+
+async fn cmdFormat(self: LuaziCli, file: string, options: any) -> void {
+  logger.info(`Formatting: ${file}`)
+
+  try {
+    let source = fs.readFileSync(file, 'utf-8')
+
+    let result = await self.orchestrator.handleRequest(self.clientId, 'format', {
+      source: source,
+      indentSize: parseInt(options.indent) || 2,
+      useTabs: options.tabs || false
+    })
+
+    if result.success && result.data?.formatted {
+      if options.inPlace {
+        fs.writeFileSync(file, result.data.formatted)
+        logger.success(`Formatted ${file} in place`)
+      } else {
+        print(result.data.formatted)
+      }
+    } else {
+      logger.failure(`Format failed: ${result.error}`)
+      process.exit(1)
+    }
+
+  } catch (e: any) {
+    logger.failure(`Error: ${e.message}`)
+    process.exit(1)
+  }
+}
+
+async fn cmdDisassemble(self: LuaziCli, file: string, options: any) -> void {
+  logger.info(`Disassembling: ${file}`)
+
+  try {
+    let bytecode = fs.readFileSync(file)
+
+    let result = await self.orchestrator.handleRequest(self.clientId, 'disassemble', {
+      bytecode: new Uint8Array(bytecode)
+    })
+
+    if result.success {
+      self.printDisassembly(result.data, options.comments != false, options.constants != false)
+    } else {
+      logger.failure(`Disassembly failed: ${result.error}`)
+      process.exit(1)
+    }
+
+  } catch (e: any) {
+    logger.failure(`Error: ${e.message}`)
+    process.exit(1)
+  }
+}
+
+async fn cmdBenchmark(self: LuaziCli, file: string, options: any) -> void {
+  logger.info(`Benchmarking: ${file}`)
+
+  try {
+    let source = fs.readFileSync(file, 'utf-8')
+    let iterations = parseInt(options.iterations) || 1000
+
+    let result = await self.orchestrator.handleRequest(self.clientId, 'benchmark', {
+      source: source,
+      input: file,
+      iterations: iterations
+    })
+
+    if result.success {
+      let data = result.data
+      logger.group('═══ Benchmark Results ═══')
+      print(`  Iterations:    ${data.iterations.toLocaleString()}`)
+      print(`  Compile time:  ${data.compileTimeMs.toFixed(2)}ms`)
+      print(`  Total time:    ${data.totalTimeMs.toFixed(2)}ms`)
+      print(`  Avg/iteration: ${data.avgTimeMs.toFixed(4)}ms`)
+      print(`  Throughput:    ${data.throughput.toFixed(0)} ops/sec`)
+      print(`  Memory delta:  ${(data.memoryDelta / 1024).toFixed(2)} KB`)
+      logger.divider()
+    } else {
+      logger.failure(`Benchmark failed: ${result.error}`)
+      process.exit(1)
+    }
+
+  } catch (e: any) {
+    logger.failure(`Error: ${e.message}`)
+    process.exit(1)
+  }
+}
+
+async fn cmdRepl(self: LuaziCli) -> void {
+  let repl = newLuaziRepl(self.orchestrator, self.clientDict)
+  await repl.start()
+}
+
+async fn cmdStats(self: LuaziCli, options: any) -> void {
+  let result = await self.orchestrator.handleRequest(self.clientId, 'stats', {})
+
+  if result.success {
+    if options.json {
+      print(JSON.stringify(result.data, null, 2))
+    } else {
+      logger.group('═══ Backend Statistics ═══')
+      print(`  Compilations:    ${result.data.backend.compileCount}`)
+      print(`  Errors:          ${result.data.backend.errorCount}`)
+      print(`  Cache size:      ${result.data.backend.cacheSize}`)
+      print(`  Success rate:    ${result.data.backend.successRate}`)
+
+      logger.group('═══ Client Statistics ═══')
+      print(`  Total clients:   ${result.data.clients.totalClients}`)
+      print(`  Active clients:  ${result.data.clients.activeClients}`)
+      print(`  Queue length:    ${result.data.clients.queueLength}`)
+      print(`  Total requests:  ${result.data.clients.totalRequestsHandled}`)
+      logger.divider()
+    }
+  }
+}
+
+async fn cmdClean(self: LuaziCli) -> void {
+  self.backend.clearCache()
+  logger.success('Cache cleared')
+}
+
+async fn cmdInit(self: LuaziCli, name: string, options: any) -> void {
+  logger.info(`Initializing project: ${name}`)
+
+  let template = options.template
+  let dir = path.resolve(name)
+
+  if fs.existsSync(dir) {
+    logger.failure(`Directory already exists: ${dir}`)
+    process.exit(1)
+  }
+
+  fs.mkdirSync(dir, { recursive: true })
+  fs.mkdirSync(path.join(dir, 'src'), { recursive: true })
+  fs.mkdirSync(path.join(dir, 'tests'), { recursive: true })
+
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+    name: name,
+    version: '0.1.0',
+    description: `A Luazi project`,
+    main: 'src/main.lz',
+    scripts: {
+      build: 'luazi compile src/main.lz',
+      run: 'luazi run src/main.lz',
+      test: 'luazi check tests/*.lz',
+      bench: 'luazi bench tests/bench.lz'
+    },
+    keywords: ['luazi'],
+    license: 'MIT'
+  }, null, 2))
+
+  let mainContent = template == 'lib'
+    ? `// ${name} library
+
+export fn greet(name: string) -> string {
+    return "Hello, " + name + "!"
+}
+`
+    : `// ${name}
+
+fn main() {
+    print("Hello, Luazi!")
+}
+
+main()
+`
+
+  fs.writeFileSync(path.join(dir, 'src', 'main.lz'), mainContent)
+  fs.writeFileSync(path.join(dir, '.gitignore'), `*.lzc
+dist/
+node_modules/
+`)
+
+  logger.success(`Created ${name} (${template} template)`)
+  print(`  cd ${name}`)
+  print(`  luazi run src/main.lz`)
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────
+
+fn configureLogging(self: LuaziCli, options: any) -> void {
+  if options.noColor {
+    logger.configure({ colors: false })
+  }
+  if options.logLevel {
+    logger.configure({ level: options.logLevel as LogLevel })
+  }
+}
+
+fn getExtension(self: LuaziCli, target: string) -> string {
+  let extensions: Record<string, string> = {
+    bytecode: '.lzc',
+    wat: '.wat',
+    cpp: '.cpp',
+    csharp: '.cs',
+    js: '.js'
+  }
+  return extensions[target] || '.lzc'
+}
+
+fn printDisassembly(self: LuaziCli, data: any, showComments: boolean, showConstants: boolean = true) -> void {
+  let header = data.header
+  let constants = data.constants
+  let protos = data.protos
+  let instructions = data.instructions
+
+  logger.group('═══ Bytecode Disassembly ═══')
+  print(`Magic:     0x${header.magic.toString(16).toUpperCase().padStart(8, '0')}`)
+  print(`Version:   ${header.version}`)
+  print(`Flags:     ${header.flags}`)
+  print(`Constants: ${header.constantCount}`)
+  print(`Protos:    ${header.protoCount}`)
+  print(`Code Size: ${header.codeSize} bytes`)
+  print('')
+
+  if showConstants && constants.length > 0 {
+    logger.group('Constants:')
+    for c in constants {
+      print(`  [${c.index.toString().padStart(3)}] ${c.type.padEnd(7)} ${JSON.stringify(c.value)}`)
+    }
+    print('')
+  }
+
+  if protos.length > 0 {
+    logger.group('Protos:')
+    for p in protos {
+      print(`  [${p.index}] consts=${p.constants} insts=${p.instructions} upvals=${p.upvalues} params=${p.params}`)
+    }
+    print('')
+  }
+
+  logger.group('Instructions:')
+  for inst in instructions {
+    let comment = showComments && inst.comment ? `  ; ${inst.comment}` : ''
+    print(
+      `  ${inst.address.toString().padStart(4, '0')}: ` +
+      `${inst.opName.padEnd(12)} ` +
+      `A=${inst.a.toString().padStart(3)} ` +
+      `B=${inst.b.toString().padStart(3)} ` +
+      `C=${inst.c.toString().padStart(3)} ` +
+      `sBx=${inst.sbx.toString().padStart(6)}` +
+      comment
+    )
+  }
+  logger.divider()
+}
+
+// ─── Entry Point ─────────────────────────────────────────────────
+
+async fn main() -> void {
+  let cli = newLuaziCli()
+  await cli.run(process.argv)
 }
 
 main().catch(e => {
-  console.error(`Fatal error: ${e}`);
-  process.exit(1);
-});      console.log(chalk.green('✓ Emitted'), bytecode.length, 'bytes');
-
-      // Try WASM execution
-      try {
-        const vm = new LuaziVM();
-        const wasmPath = path.join(__dirname, '../dist/luazi.wasm');
-        if (fs.existsSync(wasmPath)) {
-          const wasmBuffer = fs.readFileSync(wasmPath);
-          await vm.initialize(wasmBuffer);
-          const result = vm.execute(bytecode);
-          console.log(chalk.green('✓ Result:'), result);
-        } else {
-          console.log(chalk.yellow('⚠ WASM runtime not found, using JS interpreter'));
-        }
-      } catch (e) {
-        console.error(chalk.red('✗ Execution failed:'), e);
-      }
-    } catch (e) {
-      console.error(chalk.red('✗ Error:'), e);
-      process.exit(1);
-    }
-  });
-
-program
-  .command('compile <file>')
-  .description('Compile a Luazi source file to bytecode')
-  .option('-o, --output <file>', 'Output file')
-  .option('-t, --target <target>', 'Target: wasm, js, native, wat', 'wasm')
-  .option('-O, --opt <level>', 'Optimization level', '3')
-  .option('--strip', 'Strip debug symbols')
-  .option('--source-map', 'Generate source map')
-  .action((file: string, options: any) => {
-    try {
-      const source = fs.readFileSync(file, 'utf-8');
-      const { parse } = require('../core/parser');
-      const { emit } = require('../core/emitter');
-
-      const ast = parse(source, file);
-      const bytecode = emit(ast);
-
-      const outputFile = options.output || file.replace(/\.lz$/, '.lzc');
-      fs.writeFileSync(outputFile, bytecode);
-
-      console.log(chalk.green('✓ Compiled to'), outputFile);
-      console.log(chalk.gray('  Size:'), bytecode.length, 'bytes');
-    } catch (e) {
-      console.error(chalk.red('✗ Compilation failed:'), e);
-      process.exit(1);
-    }
-  });
-
-program
-  .command('check <file>')
-  .description('Type-check a Luazi source file without compiling')
-  .option('--strict', 'Use strict type checking')
-  .action((file: string, options: any) => {
-    try {
-      const source = fs.readFileSync(file, 'utf-8');
-      const { parse } = require('../core/parser');
-
-      const ast = parse(source, file);
-      console.log(chalk.green('✓ Syntax OK'));
-
-      // Type checking would go here
-      console.log(chalk.green('✓ Type check passed'));
-    } catch (e) {
-      console.error(chalk.red('✗ Type check failed:'), e);
-      process.exit(1);
-    }
-  });
-
-program
-  .command('fmt <file>')
-  .description('Format a Luazi source file')
-  .option('-i, --in-place', 'Format in place')
-  .action((file: string, options: any) => {
-    try {
-      const source = fs.readFileSync(file, 'utf-8');
-      // Formatting logic would go here
-      const formatted = source; // Placeholder
-
-      if (options.inPlace) {
-        fs.writeFileSync(file, formatted);
-        console.log(chalk.green('✓ Formatted'), file);
-      } else {
-        console.log(formatted);
-      }
-    } catch (e) {
-      console.error(chalk.red('✗ Format failed:'), e);
-      process.exit(1);
-    }
-  });
-
-program
-  .command('repl')
-  .description('Start interactive Luazi REPL')
-  .action(() => {
-    console.log(chalk.cyan('Luazi REPL v1.0.0-alpha.1'));
-    console.log(chalk.gray('Type .help for commands, .exit to quit\n'));
-
-    const readline = require('readline');
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-      prompt: chalk.cyan('lz> ')
-    });
-
-    let buffer = '';
-    let braceCount = 0;
-
-    rl.prompt();
-
-    rl.on('line', (line: string) => {
-      if (line.trim() === '.exit') {
-        rl.close();
-        return;
-      }
-
-      if (line.trim() === '.help') {
-        console.log(chalk.gray('Commands:'));
-        console.log('  .exit  - Quit REPL');
-        console.log('  .clear - Clear screen');
-        console.log('  .ast   - Show AST of last expression');
-        return;
-      }
-
-      buffer += line + '\n';
-      braceCount += (line.match(/{/g) || []).length;
-      braceCount -= (line.match(/}/g) || []).length;
-
-      if (braceCount <= 0 && line.trim().length > 0) {
-        try {
-          const { parse } = require('../core/parser');
-          const { emit } = require('../core/emitter');
-
-          const ast = parse(buffer);
-          const bytecode = emit(ast);
-          console.log(chalk.gray('// Bytecode:'), bytecode.length, 'bytes');
-        } catch (e) {
-          console.error(chalk.red('Error:'), e);
-        }
-        buffer = '';
-        braceCount = 0;
-      }
-
-      rl.prompt();
-    });
-  });
-
-program
-  .command('bench <file>')
-  .description('Benchmark a Luazi source file')
-  .option('-n, --iterations <n>', 'Number of iterations', '1000')
-  .action((file: string, options: any) => {
-    try {
-      const source = fs.readFileSync(file, 'utf-8');
-      const iterations = parseInt(options.iterations);
-
-      const { parse } = require('../core/parser');
-      const { emit } = require('../core/emitter');
-
-      const ast = parse(source, file);
-      const bytecode = emit(ast);
-
-      // Warmup
-      for (let i = 0; i < 100; i++) {
-        // Execute
-      }
-
-      const start = performance.now();
-      for (let i = 0; i < iterations; i++) {
-        // Execute bytecode
-      }
-      const elapsed = performance.now() - start;
-
-      console.log(chalk.green('Benchmark Results:'));
-      console.log(`  Iterations: ${iterations}`);
-      console.log(`  Total time: ${elapsed.toFixed(2)}ms`);
-      console.log(`  Per iteration: ${(elapsed / iterations).toFixed(4)}ms`);
-      console.log(`  Throughput: ${(iterations / (elapsed / 1000)).toFixed(0)} ops/sec`);
-    } catch (e) {
-      console.error(chalk.red('✗ Benchmark failed:'), e);
-      process.exit(1);
-    }
-  });
-
-program.parse();
+  logger.failure(`Fatal error: ${e.message || e}`)
+  process.exit(1)
+})
