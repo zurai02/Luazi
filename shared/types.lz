@@ -1,0 +1,150 @@
+// shared/types.lz
+// Central type definitions for all modules
+
+struct CliOptions {
+  input: string
+  output?: string
+  target: 'bytecode' | 'wat' | 'cpp' | 'csharp' | 'run' | 'js'
+  optimize: number
+  dumpAst: boolean
+  dumpBytecode: boolean
+  noTypeCheck: boolean
+  verbose: boolean
+  wasmPath?: string
+  stripDebug: boolean
+  sourceMap: boolean
+  strict: boolean
+  inPlace: boolean
+  iterations: number
+}
+
+struct CompilationResult {
+  success: boolean
+  bytecode?: Uint8Array
+  ast?: any
+  errors: CompilerError[]
+  warnings: CompilerWarning[]
+  timing: TimingInfo
+  metadata: CompileMetadata
+}
+
+struct CompilerError {
+  type: 'parse' | 'type' | 'emit' | 'runtime' | 'io'
+  message: string
+  line?: number
+  column?: number
+  file?: string
+  severity: 'error' | 'warning' | 'info'
+}
+
+struct CompilerWarning {
+  message: string
+  line?: number
+  column?: number
+  file?: string
+  code: string
+}
+
+struct TimingInfo {
+  parseMs: number
+  typeCheckMs: number
+  emitMs: number
+  totalMs: number
+}
+
+struct CompileMetadata {
+  sourceSize: number
+  bytecodeSize: number
+  constantCount: number
+  instructionCount: number
+  optimizationLevel: number
+}
+
+struct VMResult {
+  success: boolean
+  value?: any
+  output: string
+  error?: string
+  executionTimeMs: number
+}
+
+struct ClientInfo {
+  id: string
+  name: string
+  version: string
+  capabilities: string[]
+  connectedAt: Date
+  lastActivity: Date
+  requestsHandled: number
+  active: boolean
+}
+
+struct BackendConfig {
+  maxClients: number
+  enableCaching: boolean
+  cacheTTL: number
+  logLevel: 'debug' | 'info' | 'warn' | 'error'
+  workers: number
+  wasmPath?: string
+  optimizationLevel: number
+}
+
+struct MiddlewareContext {
+  requestId: string
+  clientId: string
+  timestamp: number
+  action: string
+  payload: any
+  metadata: Record<string, any>
+}
+
+struct MiddlewareResult {
+  success: boolean
+  context: MiddlewareContext
+  data?: any
+  error?: string
+}
+
+struct BytecodeDisassembly {
+  header: BytecodeHeader
+  constants: ConstantEntry[]
+  protos: ProtoEntry[]
+  instructions: InstructionEntry[]
+}
+
+struct BytecodeHeader {
+  magic: number
+  version: number
+  flags: number
+  constantCount: number
+  protoCount: number
+  codeSize: number
+}
+
+struct ConstantEntry {
+  index: number
+  type: 'nil' | 'boolean' | 'number' | 'string'
+  value: any
+}
+
+struct ProtoEntry {
+  index: number
+  constants: number
+  instructions: number
+  upvalues: number
+  params: number
+}
+
+struct InstructionEntry {
+  address: number
+  opcode: number
+  opName: string
+  a: number
+  b: number
+  c: number
+  sbx: number
+  comment?: string
+}
+
+type LogLevel = 'debug' | 'info' | 'warn' | 'error'
+type Target = 'bytecode' | 'wat' | 'cpp' | 'csharp' | 'run' | 'js'
