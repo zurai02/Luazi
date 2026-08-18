@@ -1,0 +1,551 @@
+// mcp/server.lz
+// Model Context Protocol server for Claude/Codex integration
+
+import { Server } from '@modelcontextprotocol/sdk/server/index.js'
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  Tool,
+} from '@modelcontextprotocol/sdk/types.js'
+import { Backend } from '../backend/backend'
+import { ClientDictionary } from '../client/client'
+import { MiddlewareOrchestrator, createOrchestrator } from '../middleware/middleware'
+import { logger } from '../shared/logger'
+
+// ─── Tool Definitions ────────────────────────────────────────────
+
+struct CompileTool {
+  name: string = 'compile'
+  description: string = 'Compile Luazi source code to bytecode, WAT, C++, C#, or JS'
+  inputSchema: any = {
+    type: 'object',
+    properties: {
+      source: { type: 'string', description: 'Luazi source code to compile' },
+      filename: { type: 'string', description: 'Source filename', default: 'input.lz' },
+      target: { type: 'string', enum: ['bytecode', 'wat', 'cpp', 'csharp', 'js', 'run'], default: 'bytecode' },
+      optimize: { type: 'integer', minimum: 0, maximum: 3, default: 0 },
+      noTypeCheck: { type: 'boolean', default: false },
+      stripDebug: { type: 'boolean', default: false }
+    },
+    required: ['source']
+  }
+}
+
+struct ExecuteTool {
+  name: string = 'execute'
+  description: string = 'Execute compiled Luazi bytecode'
+  inputSchema: any = {
+    type: 'object',
+    properties: {
+      bytecode: { type: 'string', description: 'Base64-encoded bytecode' },
+      wasmPath: { type: 'string', description: 'Path to WASM runtime module' },
+      timeoutMs: { type: 'integer', default: 30000 }
+    },
+    required: ['bytecode']
+  }
+}
+
+struct TypecheckTool {
+  name: string = 'typecheck'
+  description: string = 'Type-check Luazi source code without compiling'
+  inputSchema: any = {
+    type: 'object',
+    properties: {
+      source: { type: 'string', description: 'Luazi source code' },
+      filename: { type: 'string', default: 'input.lz' }
+    },
+    required: ['source']
+  }
+}
+
+struct DisassembleTool {
+  name: string = 'disassemble'
+  description: string = 'Disassemble Luazi bytecode into human-readable instructions'
+  inputSchema: any = {
+    type: 'object',
+    properties: {
+      bytecode: { type: 'string', description: 'Base64-encoded bytecode' }
+    },
+    required: ['bytecode']
+  }
+}
+
+struct FormatTool {
+  name: string = 'format'
+  description: string = 'Format Luazi source code'
+  inputSchema: any = {
+    type: 'object',
+    properties: {
+      source: { type: 'string', description: 'Luazi source code' },
+      indentSize: { type: 'integer', default: 2 },
+      useTabs: { type: 'boolean', default: false }
+    },
+    required: ['source']
+  }
+}
+
+struct BenchmarkTool {
+  name: string = 'benchmark'
+  description: string = 'Benchmark Luazi source code execution'
+  inputSchema: any = {
+    type: 'object',
+    properties: {
+      source: { type: 'string', description: 'Luazi source code' },
+      filename: { type: 'string', default: 'bench.lz' },
+      iterations: { type: 'integer', default: 1000 }
+    },
+    required: ['source']
+  }
+}
+
+struct GetAstTool {
+  name: string = 'getAst'
+  description: string = 'Get the AST of Luazi source code'
+  inputSchema: any = {
+    type: 'object',
+    properties: {
+      source: { type: 'string', description: 'Luazi source code' },
+      filename: { type: 'string', default: 'input.lz' }
+    },
+    required: ['source']
+  }
+}
+
+struct GetLanguageInfoTool {
+  name: string = 'getLanguageInfo'
+  description: string = 'Get information about the Luazi programming language'
+  inputSchema: any = {
+    type: 'object',
+    properties: {}
+  }
+}
+
+struct InitProjectTool {
+  name: string = 'initProject'
+  description: string = 'Initialize a new Luazi project'
+  inputSchema: any = {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'Project name' },
+      template: { type: 'string', enum: ['basic', 'lib', 'app'], default: 'basic' },
+      directory: { type: 'string', description: 'Target directory' }
+    },
+    required: ['name']
+  }
+}
+
+// ─── Server Implementation ───────────────────────────────────────
+
+struct LuaziMcpServer {
+  server: Server
+  backend: Backend
+  clientDict: ClientDictionary
+  orchestrator: MiddlewareOrchestrator
+  clientId: string
+}
+
+fn newLuaziMcpServer() -> LuaziMcpServer {
+  let be = new Backend()
+  let cd = new ClientDictionary()
+  let orch = createOrchestrator(cd, be)
+  let cid = cd.registerClient('mcp-server', '1.0.0', [
+    'compile', 'execute', 'disassemble', 'format', 'benchmark', 'check', 'stats'
+  ])
+
+  let srv = new Server(
+    { name: 'luazi-mcp-server', version: '1.0.0' },
+    { capabilities: { tools: {} } }
+  )
+
+  let self = LuaziMcpServer {
+    server: srv,
+    backend: be,
+    clientDict: cd,
+    orchestrator: orch,
+    clientId: cid
+  }
+
+  self.setupHandlers()
+  return self
+}
+
+fn setupHandlers(self: LuaziMcpServer) -> void {
+  self.server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      CompileTool(),
+      ExecuteTool(),
+      TypecheckTool(),
+      DisassembleTool(),
+      FormatTool(),
+      BenchmarkTool(),
+      GetAstTool(),
+      GetLanguageInfoTool(),
+      InitProjectTool()
+    ]
+  }))
+
+  self.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    let name = request.params.name
+    let args = request.params.arguments
+
+    try {
+      match name {
+        'compile' => return await self.handleCompile(args)
+        'execute' => return await self.handleExecute(args)
+        'typecheck' => return await self.handleTypeCheck(args)
+        'disassemble' => return await self.handleDisassemble(args)
+        'format' => return await self.handleFormat(args)
+        'benchmark' => return await self.handleBenchmark(args)
+        'getAst' => return await self.handleGetAst(args)
+        'getLanguageInfo' => return await self.handleGetLanguageInfo()
+        'initProject' => return await self.handleInitProject(args)
+        _ => throw new Error(`Unknown tool: ${name}`)
+      }
+    } catch (error: any) {
+      return {
+        content: [{ type: 'text', text: `Error: ${error.message || String(error)}` }],
+        isError: true
+      }
+    }
+  })
+}
+
+// ─── Tool Handlers ───────────────────────────────────────────────
+
+async fn handleCompile(self: LuaziMcpServer, args: any) -> any {
+  let result = await self.orchestrator.handleRequest(self.clientId, 'compile', {
+    source: args.source,
+    input: args.filename || 'input.lz',
+    target: args.target || 'bytecode',
+    optimize: args.optimize || 0,
+    noTypeCheck: args.noTypeCheck || false,
+    stripDebug: args.stripDebug || false
+  })
+
+  if !result.success {
+    return {
+      content: [{ type: 'text', text: `Compilation failed: ${result.error}` }],
+      isError: true
+    }
+  }
+
+  let lines: string[] = ['✓ Compilation successful']
+
+  if result.data?.timing {
+    let t = result.data.timing
+    lines.push('')
+    lines.push('Timing:')
+    lines.push(`  Parse: ${t.parseMs.toFixed(2)}ms`)
+    lines.push(`  Type check: ${t.typeCheckMs.toFixed(2)}ms`)
+    lines.push(`  Emit: ${t.emitMs.toFixed(2)}ms`)
+    lines.push(`  Total: ${t.totalMs.toFixed(2)}ms`)
+  }
+
+  if result.data?.metadata {
+    let m = result.data.metadata
+    lines.push('')
+    lines.push('Metadata:')
+    lines.push(`  Source size: ${m.sourceSize} bytes`)
+    lines.push(`  Bytecode size: ${m.bytecodeSize} bytes`)
+    lines.push(`  Constants: ${m.constantCount}`)
+    lines.push(`  Instructions: ${m.instructionCount}`)
+  }
+
+  if result.data?.warnings?.length > 0 {
+    lines.push('')
+    lines.push(`Warnings (${result.data.warnings.length}):`)
+    for w in result.data.warnings {
+      lines.push(`  ⚠ ${w.message}`)
+    }
+  }
+
+  if result.data?.bytecode {
+    lines.push('')
+    lines.push('Bytecode (base64):')
+    lines.push(Buffer.from(result.data.bytecode).toString('base64'))
+  }
+
+  return { content: [{ type: 'text', text: lines.join('\n') }] }
+}
+
+async fn handleExecute(self: LuaziMcpServer, args: any) -> any {
+  let bytecode = Buffer.from(args.bytecode, 'base64')
+
+  let result = await self.orchestrator.handleRequest(self.clientId, 'execute', {
+    bytecode: new Uint8Array(bytecode),
+    wasmPath: args.wasmPath,
+    timeoutMs: args.timeoutMs || 30000
+  })
+
+  if !result.success {
+    return {
+      content: [{ type: 'text', text: `Execution failed: ${result.error}` }],
+      isError: true
+    }
+  }
+
+  let lines: string[] = ['✓ Execution completed']
+  lines.push(`')
+  lines.push(`Result: ${JSON.stringify(result.data?.value)}`)
+  if result.data?.output {
+    lines.push(`Output: ${result.data.output}`)
+  }
+  lines.push(`Time: ${result.processingTimeMs.toFixed(2)}ms`)
+
+  return { content: [{ type: 'text', text: lines.join('\n') }] }
+}
+
+async fn handleTypeCheck(self: LuaziMcpServer, args: any) -> any {
+  let result = await self.orchestrator.handleRequest(self.clientId, 'check', {
+    source: args.source,
+    input: args.filename || 'input.lz'
+  })
+
+  if result.success {
+    let lines = ['✓ Type check passed']
+    if result.data?.warnings?.length > 0 {
+      lines.push('')
+      lines.push(`Warnings (${result.data.warnings.length}):`)
+      for w in result.data.warnings {
+        lines.push(`  ⚠ ${w.message}`)
+      }
+    }
+    return { content: [{ type: 'text', text: lines.join('\n') }] }
+  } else {
+    let lines = ['✗ Type check failed']
+    if result.data?.errors {
+      for err in result.data.errors {
+        let loc = err.line ? `:${err.line}${err.column ? `:${err.column}` : ''}` : ''
+        lines.push(`  ✗ ${err.file || args.filename}${loc} - ${err.message}`)
+      }
+    }
+    return { content: [{ type: 'text', text: lines.join('\n') }], isError: true }
+  }
+}
+
+async fn handleDisassemble(self: LuaziMcpServer, args: any) -> any {
+  let bytecode = Buffer.from(args.bytecode, 'base64')
+
+  let result = await self.orchestrator.handleRequest(self.clientId, 'disassemble', {
+    bytecode: new Uint8Array(bytecode)
+  })
+
+  if !result.success {
+    return {
+      content: [{ type: 'text', text: `Disassembly failed: ${result.error}` }],
+      isError: true
+    }
+  }
+
+  let header = result.data.header
+  let constants = result.data.constants
+  let instructions = result.data.instructions
+  let lines: string[] = []
+
+  lines.push('═══ Bytecode Disassembly ═══')
+  lines.push(`Magic: 0x${header.magic.toString(16).toUpperCase().padStart(8, '0')}`)
+  lines.push(`Version: ${header.version} | Constants: ${header.constantCount} | Protos: ${header.protoCount}`)
+  lines.push('')
+
+  if constants.length > 0 {
+    lines.push('Constants:')
+    for c in constants {
+      lines.push(`  [${c.index.toString().padStart(3)}] ${c.type.padEnd(7)} ${JSON.stringify(c.value)}`)
+    }
+    lines.push('')
+  }
+
+  lines.push('Instructions:')
+  for inst in instructions {
+    let comment = inst.comment ? `  ; ${inst.comment}` : ''
+    lines.push(
+      `  ${inst.address.toString().padStart(4, '0')}: ` +
+      `${inst.opName.padEnd(12)} ` +
+      `A=${inst.a.toString().padStart(3)} ` +
+      `B=${inst.b.toString().padStart(3)} ` +
+      `C=${inst.c.toString().padStart(3)} ` +
+      `sBx=${inst.sbx.toString().padStart(6)}` +
+      comment
+    )
+  }
+
+  return { content: [{ type: 'text', text: lines.join('\n') }] }
+}
+
+async fn handleFormat(self: LuaziMcpServer, args: any) -> any {
+  let result = await self.orchestrator.handleRequest(self.clientId, 'format', {
+    source: args.source,
+    indentSize: args.indentSize || 2,
+    useTabs: args.useTabs || false
+  })
+
+  if result.success && result.data?.formatted {
+    return {
+      content: [{ type: 'text', text: `✓ Formatted code:\n\n${result.data.formatted}` }]
+    }
+  } else {
+    return {
+      content: [{ type: 'text', text: `Format failed: ${result.error}` }],
+      isError: true
+    }
+  }
+}
+
+async fn handleBenchmark(self: LuaziMcpServer, args: any) -> any {
+  let result = await self.orchestrator.handleRequest(self.clientId, 'benchmark', {
+    source: args.source,
+    input: args.filename || 'bench.lz',
+    iterations: args.iterations || 1000
+  })
+
+  if !result.success {
+    return {
+      content: [{ type: 'text', text: `Benchmark failed: ${result.error}` }],
+      isError: true
+    }
+  }
+
+  let data = result.data
+  let lines: string[] = [
+    '═══ Benchmark Results ═══',
+    `Iterations:    ${data.iterations.toLocaleString()}`,
+    `Compile time:  ${data.compileTimeMs.toFixed(2)}ms`,
+    `Total time:    ${data.totalTimeMs.toFixed(2)}ms`,
+    `Avg/iteration: ${data.avgTimeMs.toFixed(4)}ms`,
+    `Throughput:    ${data.throughput.toFixed(0)} ops/sec`,
+    `Memory delta:  ${(data.memoryDelta / 1024).toFixed(2)} KB`
+  ]
+
+  return { content: [{ type: 'text', text: lines.join('\n') }] }
+}
+
+async fn handleGetAst(self: LuaziMcpServer, args: any) -> any {
+  let result = await self.orchestrator.handleRequest(self.clientId, 'compile', {
+    source: args.source,
+    input: args.filename || 'input.lz',
+    target: 'run',
+    optimize: 0,
+    noTypeCheck: false,
+    dumpAst: true
+  })
+
+  if result.success && result.data?.ast {
+    return {
+      content: [{ type: 'text', text: JSON.stringify(result.data.ast, null, 2) }]
+    }
+  } else {
+    return {
+      content: [{ type: 'text', text: `AST extraction failed: ${result.error}` }],
+      isError: true
+    }
+  }
+}
+
+async fn handleGetLanguageInfo(self: LuaziMcpServer) -> any {
+  let info = {
+    name: 'Luazi',
+    version: '1.0.0-alpha.2',
+    description: 'A modern systems programming language with TypeScript-based compiler toolchain',
+    paradigms: ['imperative', 'functional', 'object-oriented', 'systems'],
+    features: {
+      typeSystem: 'Hindley-Milner style inference with gradual typing',
+      memoryModel: 'Ownership and borrowing inspired by Rust',
+      concurrency: 'First-class async/await',
+      compilation: 'Multi-target: bytecode, WebAssembly, C++, C#',
+      performance: 'SIMD support, zero-cost abstractions'
+    },
+    syntax: {
+      variables: ['let (immutable)', 'const (constant)', 'mut (mutable)'],
+      functions: ['fn name() {}', 'async fn name() {}'],
+      types: ['number', 'string', 'boolean', 'struct', 'enum', 'trait'],
+      controlFlow: ['if/else', 'while', 'for', 'match', 'guard'],
+      memory: ['defer', 'ownership', 'borrowing'],
+      other: ['pattern matching', 'generics', 'SIMD operations']
+    },
+    example: `fn fibonacci(n: number) -> number {\n    guard n > 0 else { return 0 }\n    if n <= 2 { return 1 }\n    return fibonacci(n - 1) + fibonacci(n - 2)\n}\n\nlet result = fibonacci(10)\nprint(result)  // 55`,
+    cliCommands: [
+      'luazi run <file>',
+      'luazi compile <file> [-t target]',
+      'luazi check <file>',
+      'luazi fmt <file>',
+      'luazi disasm <file>',
+      'luazi bench <file>',
+      'luazi repl',
+      'luazi init [name]',
+      'luazi stats',
+      'luazi clean'
+    ]
+  }
+
+  return { content: [{ type: 'text', text: JSON.stringify(info, null, 2) }] }
+}
+
+async fn handleInitProject(self: LuaziMcpServer, args: any) -> any {
+  let fs = await import('fs')
+  let path = await import('path')
+
+  let name = args.name
+  let template = args.template || 'basic'
+  let dir = args.directory ? path.resolve(args.directory) : path.resolve(name)
+
+  if fs.existsSync(dir) {
+    return {
+      content: [{ type: 'text', text: `Error: Directory already exists: ${dir}` }],
+      isError: true
+    }
+  }
+
+  fs.mkdirSync(dir, { recursive: true })
+  fs.mkdirSync(path.join(dir, 'src'), { recursive: true })
+  fs.mkdirSync(path.join(dir, 'tests'), { recursive: true })
+
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+    name: name,
+    version: '0.1.0',
+    description: `A Luazi project`,
+    main: 'src/main.lz',
+    scripts: {
+      build: 'luazi compile src/main.lz',
+      run: 'luazi run src/main.lz',
+      test: 'luazi check tests/*.lz',
+      bench: 'luazi bench tests/bench.lz'
+    },
+    keywords: ['luazi'],
+    license: 'MIT'
+  }, null, 2))
+
+  let mainContent = template == 'lib'
+    ? `// ${name} library\n\nexport fn greet(name: string) -> string {\n    return "Hello, " + name + "!"\n}\n`
+    : `// ${name}\n\nfn main() {\n    print("Hello, Luazi!")\n}\n\nmain()\n`
+
+  fs.writeFileSync(path.join(dir, 'src', 'main.lz'), mainContent)
+  fs.writeFileSync(path.join(dir, '.gitignore'), `*.lzc\ndist/\nnode_modules/\n`)
+
+  return {
+    content: [{
+      type: 'text',
+      text: `✓ Created project: ${name} (${template} template)\n\ncd ${name}\nluazi run src/main.lz`
+    }]
+  }
+}
+
+// ─── Server Lifecycle ──────────────────────────────────────────
+
+async fn start(self: LuaziMcpServer) -> void {
+  let transport = new StdioServerTransport()
+  await self.server.connect(transport)
+  logger.info('Luazi MCP Server running on stdio')
+}
+
+// ─── Entry Point ─────────────────────────────────────────────────
+
+async fn main() {
+  let mcpServer = newLuaziMcpServer()
+  await mcpServer.start()
+}
+
+main().catch((error) => {
+  print('Fatal error:', error)
+  process.exit(1)
+})
