@@ -1,0 +1,317 @@
+// repl/repl.lz
+// Interactive Read-Eval-Print Loop with history and multi-line support
+
+import { MiddlewareOrchestrator } from '../middleware/middleware'
+import { ClientDictionary } from '../client/client'
+import { logger } from '../shared/logger'
+
+struct ReplState {
+  buffer: string
+  braceCount: number
+  bracketCount: number
+  parenCount: number
+  history: string[]
+  historyIndex: number
+  lastAst: any
+  lastBytecode: Uint8Array | null
+  variables: Map<string, any>
+}
+
+struct LuaziRepl {
+  orchestrator: MiddlewareOrchestrator
+  clientDict: ClientDictionary
+  clientId: string
+  state: ReplState
+  rl: any | null
+  running: boolean
+}
+
+fn newLuaziRepl(orchestrator: MiddlewareOrchestrator, clientDict: ClientDictionary) -> LuaziRepl {
+  let clientId = clientDict.registerClient('repl', '1.0.0', ['compile', 'execute', 'check'])
+  return LuaziRepl {
+    orchestrator: orchestrator,
+    clientDict: clientDict,
+    clientId: clientId,
+    state: ReplState {
+      buffer: '',
+      braceCount: 0,
+      bracketCount: 0,
+      parenCount: 0,
+      history: [],
+      historyIndex: -1,
+      lastAst: null,
+      lastBytecode: null,
+      variables: new Map()
+    },
+    rl: null,
+    running: false
+  }
+}
+
+async fn start(self: LuaziRepl) -> void {
+  self.running = true
+  // readline setup would go here
+  print('')
+  logger.group('═══ Luazi REPL v1.0.0-alpha.1 ═══')
+  print('  Type .help for commands, .exit to quit')
+  print('  Multi-line expressions supported ({} [] ())')
+  print('')
+}
+
+async fn handleLine(self: LuaziRepl, line: string) -> void {
+  let trimmed = line.trim()
+
+  if trimmed.startsWith('.') {
+    await self.handleCommand(trimmed)
+    return
+  }
+
+  if trimmed == '' && self.isMultiLine() {
+    self.state.buffer += '
+'
+    return
+  }
+
+  if trimmed == '' {
+    return
+  }
+
+  self.state.buffer += line + '
+'
+  self.updateBraceCounts(line)
+
+  if self.isMultiLine() {
+    return
+  }
+
+  await self.executeBuffer()
+  self.resetState()
+}
+
+async fn executeBuffer(self: LuaziRepl) -> void {
+  let source = self.state.buffer.trim()
+  if source == '' { return }
+
+  self.state.history.push(source)
+  self.state.historyIndex = self.state.history.length
+
+  try {
+    let compileResult = await self.orchestrator.handleRequest(self.clientId, 'compile', {
+      source: source,
+      target: 'run',
+      optimize: 0,
+      noTypeCheck: false
+    })
+
+    if !compileResult.success {
+      logger.error(compileResult.error || 'Compilation failed')
+      return
+    }
+
+    self.state.lastAst = compileResult.data?.ast
+    self.state.lastBytecode = compileResult.data?.bytecode
+
+    if self.state.lastBytecode {
+      let execResult = await self.orchestrator.handleRequest(self.clientId, 'execute', {
+        bytecode: self.state.lastBytecode
+      })
+
+      if execResult.success {
+        if execResult.data?.value != undefined {
+          print(self.formatValue(execResult.data.value))
+        }
+      } else {
+        logger.error(execResult.error || 'Execution failed')
+      }
+    }
+
+    if compileResult.data?.timing {
+      let t = compileResult.data.timing
+      logger.debug(`Parse: ${t.parseMs.toFixed(2)}ms | Type: ${t.typeCheckMs.toFixed(2)}ms | Emit: ${t.emitMs.toFixed(2)}ms`)
+    }
+
+  } catch (e: any) {
+    logger.error(e.message || String(e))
+  }
+}
+
+async fn handleCommand(self: LuaziRepl, cmd: string) -> void {
+  let parts = cmd.split(' ')
+  let command = parts[0]
+  let args = parts.slice(1)
+
+  match command {
+    '.exit' | '.quit' => self.shutdown()
+    '.help' => self.printHelp()
+    '.clear' => print('')
+    '.ast' => {
+      if self.state.lastAst {
+        print(JSON.stringify(self.state.lastAst, null, 2))
+      } else {
+        logger.warn('No AST available. Execute an expression first.')
+      }
+    }
+    '.bytecode' => {
+      if self.state.lastBytecode {
+        let result = await self.orchestrator.handleRequest(self.clientId, 'disassemble', {
+          bytecode: self.state.lastBytecode
+        })
+        if result.success {
+          self.printDisassembly(result.data)
+        }
+      } else {
+        logger.warn('No bytecode available. Execute an expression first.')
+      }
+    }
+    '.vars' => self.printVariables()
+    '.stats' => {
+      let stats = await self.orchestrator.handleRequest(self.clientId, 'stats', {})
+      if stats.success {
+        print(JSON.stringify(stats.data, null, 2))
+      }
+    }
+    '.history' => self.printHistory()
+    '.type' => {
+      if args.length > 0 {
+        let source = args.join(' ')
+        let result = await self.orchestrator.handleRequest(self.clientId, 'check', { source: source })
+        if result.success {
+          logger.success('Type check passed')
+        } else {
+          logger.error(result.error || 'Type check failed')
+        }
+      }
+    }
+    '.load' => {
+      if args.length > 0 {
+        try {
+          let source = fs.readFileSync(args[0], 'utf-8')
+          self.state.buffer = source + '
+'
+          await self.executeBuffer()
+          self.resetState()
+        } catch (e: any) {
+          logger.error(`Cannot load file: ${e.message}`)
+        }
+      }
+    }
+    '.save' => {
+      if args.length > 0 && self.state.lastBytecode {
+        try {
+          fs.writeFileSync(args[0], self.state.lastBytecode)
+          logger.success(`Bytecode saved to ${args[0]}`)
+        } catch (e: any) {
+          logger.error(`Cannot save file: ${e.message}`)
+        }
+      }
+    }
+    _ => logger.warn(`Unknown command: ${command}. Type .help for available commands.`)
+  }
+}
+
+fn isMultiLine(self: LuaziRepl) -> boolean {
+  return self.state.braceCount > 0 || self.state.bracketCount > 0 || self.state.parenCount > 0
+}
+
+fn updateBraceCounts(self: LuaziRepl, line: string) -> void {
+  for char in line {
+    if char == '{' { self.state.braceCount++ }
+    else if char == '}' { self.state.braceCount-- }
+    else if char == '[' { self.state.bracketCount++ }
+    else if char == ']' { self.state.bracketCount-- }
+    else if char == '(' { self.state.parenCount++ }
+    else if char == ')' { self.state.parenCount-- }
+  }
+}
+
+fn resetState(self: LuaziRepl) -> void {
+  self.state.buffer = ''
+  self.state.braceCount = 0
+  self.state.bracketCount = 0
+  self.state.parenCount = 0
+}
+
+fn formatValue(self: LuaziRepl, value: any) -> string {
+  if value == null { return 'null' }
+  if value == undefined { return 'undefined' }
+  if typeof value == 'string' { return `"${value}"` }
+  if typeof value == 'number' { return String(value) }
+  if typeof value == 'boolean' { return String(value) }
+  if Array.isArray(value) { return `[${value.map(v => self.formatValue(v)).join(', ')}]` }
+  if typeof value == 'object' { return JSON.stringify(value, null, 2) }
+  return String(value)
+}
+
+fn printHelp(self: LuaziRepl) -> void {
+  print('')
+  logger.group('═══ REPL Commands ═══')
+  print('  .exit, .quit    Exit the REPL')
+  print('  .clear          Clear the screen')
+  print('  .ast            Show AST of last expression')
+  print('  .bytecode       Show disassembly of last expression')
+  print('  .vars           Show defined variables')
+  print('  .stats          Show backend statistics')
+  print('  .history        Show command history')
+  print('  .type <expr>    Type-check an expression')
+  print('  .load <file>    Load and execute a file')
+  print('  .save <file>    Save last bytecode to file')
+  print('')
+}
+
+fn printVariables(self: LuaziRepl) -> void {
+  if self.state.variables.size == 0 {
+    logger.info('No variables defined')
+    return
+  }
+  print('')
+  logger.group('═══ Variables ═══')
+  for (name, value) in self.state.variables {
+    print(`  ${name} = ${self.formatValue(value)}`)
+  }
+  print('')
+}
+
+fn printHistory(self: LuaziRepl) -> void {
+  print('')
+  logger.group('═══ History ═══')
+  for (entry, i) in self.state.history {
+    let display = entry.split('
+')[0].substring(0, 60)
+    if entry.length > 60 { display += '...' }
+    print(`  ${i + 1}. ${display}`)
+  }
+  print('')
+}
+
+fn printDisassembly(self: LuaziRepl, data: any) -> void {
+  let header = data.header
+  let constants = data.constants
+  let instructions = data.instructions
+  print('')
+  logger.group('═══ Bytecode Disassembly ═══')
+  print(`Magic: 0x${header.magic.toString(16).toUpperCase().padStart(8, '0')}`)
+  print(`Version: ${header.version} | Constants: ${header.constantCount} | Protos: ${header.protoCount}`)
+  print('')
+
+  if constants.length > 0 {
+    logger.group('Constants:')
+    for c in constants {
+      print(`  [${c.index.toString().padStart(3)}] ${c.type.padEnd(7)} ${JSON.stringify(c.value)}`)
+    }
+    print('')
+  }
+
+  logger.group('Instructions:')
+  for inst in instructions {
+    let comment = inst.comment ? `  ; ${inst.comment}` : ''
+    print(`  ${inst.address.toString().padStart(4, '0')}: ${inst.opName.padEnd(12)} A=${inst.a} B=${inst.b} C=${inst.c}${comment}`)
+  }
+  print('')
+}
+
+fn shutdown(self: LuaziRepl) -> void {
+  self.running = false
+  self.clientDict.unregisterClient(self.clientId)
+  print('')
+  print('Goodbye!')
+}
