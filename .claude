@@ -1,0 +1,310 @@
+{
+  "name": "Luazi",
+  "description": "Luazi programming language - Claude integration with MCP servers for compiler toolchain",
+  "version": "1.0.0",
+
+  "mcpServers": {
+    "luazi-compiler": {
+      "command": "npx",
+      "args": [
+        "ts-node",
+        "mcp/server.lz"
+      ],
+      "env": {
+        "NODE_ENV": "development",
+        "LUAZI_LOG_LEVEL": "info"
+      },
+      "description": "Luazi compiler and runtime server",
+      "tools": [
+        {
+          "name": "compile",
+          "description": "Compile Luazi source code to bytecode or other targets",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string",
+                "description": "Luazi source code to compile"
+              },
+              "filename": {
+                "type": "string",
+                "description": "Source filename for error reporting",
+                "default": "input.lz"
+              },
+              "target": {
+                "type": "string",
+                "enum": ["bytecode", "wat", "cpp", "csharp", "js", "run"],
+                "default": "bytecode",
+                "description": "Compilation target"
+              },
+              "optimize": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3,
+                "default": 0,
+                "description": "Optimization level"
+              },
+              "noTypeCheck": {
+                "type": "boolean",
+                "default": false,
+                "description": "Skip type checking"
+              },
+              "stripDebug": {
+                "type": "boolean",
+                "default": false,
+                "description": "Strip debug symbols"
+              }
+            },
+            "required": ["source"]
+          }
+        },
+        {
+          "name": "execute",
+          "description": "Execute compiled Luazi bytecode",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "bytecode": {
+                "type": "string",
+                "description": "Base64-encoded bytecode"
+              },
+              "wasmPath": {
+                "type": "string",
+                "description": "Path to WASM runtime module"
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "default": 30000,
+                "description": "Execution timeout in milliseconds"
+              }
+            },
+            "required": ["bytecode"]
+          }
+        },
+        {
+          "name": "typecheck",
+          "description": "Type-check Luazi source code without compiling",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string",
+                "description": "Luazi source code to type-check"
+              },
+              "filename": {
+                "type": "string",
+                "default": "input.lz",
+                "description": "Source filename"
+              }
+            },
+            "required": ["source"]
+          }
+        },
+        {
+          "name": "disassemble",
+          "description": "Disassemble Luazi bytecode into readable instructions",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "bytecode": {
+                "type": "string",
+                "description": "Base64-encoded bytecode"
+              }
+            },
+            "required": ["bytecode"]
+          }
+        },
+        {
+          "name": "format",
+          "description": "Format Luazi source code",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string",
+                "description": "Luazi source code to format"
+              },
+              "indentSize": {
+                "type": "integer",
+                "default": 2,
+                "description": "Number of spaces per indent"
+              },
+              "useTabs": {
+                "type": "boolean",
+                "default": false,
+                "description": "Use tabs instead of spaces"
+              }
+            },
+            "required": ["source"]
+          }
+        },
+        {
+          "name": "benchmark",
+          "description": "Benchmark Luazi source code execution",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string",
+                "description": "Luazi source code to benchmark"
+              },
+              "filename": {
+                "type": "string",
+                "default": "bench.lz",
+                "description": "Source filename"
+              },
+              "iterations": {
+                "type": "integer",
+                "default": 1000,
+                "description": "Number of iterations"
+              }
+            },
+            "required": ["source"]
+          }
+        },
+        {
+          "name": "getAst",
+          "description": "Get the Abstract Syntax Tree of Luazi source code",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string",
+                "description": "Luazi source code"
+              },
+              "filename": {
+                "type": "string",
+                "default": "input.lz",
+                "description": "Source filename"
+              }
+            },
+            "required": ["source"]
+          }
+        },
+        {
+          "name": "getLanguageInfo",
+          "description": "Get information about the Luazi programming language",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      ]
+    },
+
+    "luazi-project": {
+      "command": "npx",
+      "args": [
+        "ts-node",
+        "cli/cli.lz"
+      ],
+      "env": {
+        "NODE_ENV": "development"
+      },
+      "description": "Luazi project management server",
+      "tools": [
+        {
+          "name": "initProject",
+          "description": "Initialize a new Luazi project",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Project name"
+              },
+              "template": {
+                "type": "string",
+                "enum": ["basic", "lib", "app"],
+                "default": "basic",
+                "description": "Project template"
+              },
+              "directory": {
+                "type": "string",
+                "description": "Target directory (defaults to project name)"
+              }
+            },
+            "required": ["name"]
+          }
+        },
+        {
+          "name": "listExamples",
+          "description": "List available Luazi example programs",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "name": "getExample",
+          "description": "Get a specific example program",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Example name"
+              }
+            },
+            "required": ["name"]
+          }
+        }
+      ]
+    }
+  },
+
+  "systemPrompt": {
+    "role": "You are a Luazi programming language assistant. You help users write, compile, debug, and optimize Luazi code.",
+    "capabilities": [
+      "Write Luazi code based on user requirements",
+      "Compile and execute Luazi programs",
+      "Type-check code and report errors",
+      "Disassemble bytecode for debugging",
+      "Format code according to style guidelines",
+      "Benchmark code performance",
+      "Explain language features and syntax",
+      "Suggest optimizations"
+    ],
+    "languageFeatures": {
+      "variables": ["let", "const", "mut"],
+      "functions": ["fn", "async fn"],
+      "types": ["number", "string", "boolean", "array", "struct", "enum", "trait"],
+      "controlFlow": ["if/else", "while", "for", "match", "guard"],
+      "memory": ["ownership", "borrowing", "defer"],
+      "concurrency": ["async/await"],
+      "other": ["pattern matching", "SIMD", "generics"]
+    },
+    "bestPractices": [
+      "Use const for immutable values",
+      "Use let for values that don't need reassignment",
+      "Use mut only when mutation is necessary",
+      "Prefer pattern matching over if-else chains",
+      "Use guard statements for early returns",
+      "Use defer for cleanup operations",
+      "Leverage type inference when types are obvious"
+    ]
+  },
+
+  "commands": {
+    "build": {
+      "description": "Build the Luazi project",
+      "command": "npx ts-node cli/cli.lz compile src/main.lz -O2"
+    },
+    "run": {
+      "description": "Run the main Luazi program",
+      "command": "npx ts-node cli/cli.lz run src/main.lz"
+    },
+    "test": {
+      "description": "Run all tests",
+      "command": "npx ts-node cli/cli.lz check tests/*.lz"
+    },
+    "bench": {
+      "description": "Run benchmarks",
+      "command": "npx ts-node cli/cli.lz bench tests/bench.lz -n 10000"
+    },
+    "repl": {
+      "description": "Start interactive REPL",
+      "command": "npx ts-node cli/cli.lz repl"
+    }
+  }
+}
