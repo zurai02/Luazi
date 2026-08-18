@@ -1,0 +1,409 @@
+// backend/backend.lz
+// Core compilation, execution, and analysis engine
+
+import * as fs from 'fs'
+import * as path from 'path'
+import {
+  CliOptions, CompilationResult, CompilerError, CompilerWarning,
+  TimingInfo, CompileMetadata, VMResult, BytecodeDisassembly,
+  BytecodeHeader, InstructionEntry, ConstantEntry, ProtoEntry,
+  BackendConfig
+} from '../shared/types'
+import { logger } from '../shared/logger'
+
+struct CompileOptions {
+  source: string
+  filename: string
+  target: 'bytecode' | 'wat' | 'cpp' | 'csharp' | 'js'
+  optimize: number
+  noTypeCheck: boolean
+  stripDebug: boolean
+  sourceMap: boolean
+}
+
+struct ExecuteOptions {
+  bytecode: Uint8Array
+  wasmPath?: string
+  timeoutMs?: number
+}
+
+struct FormatOptions {
+  source: string
+  indentSize: number
+  useTabs: boolean
+  maxLineLength: number
+}
+
+struct Backend {
+  private config: BackendConfig
+  private cache: Map<string, { result: CompilationResult; timestamp: number }>
+  private compileCount: number
+  private errorCount: number
+}
+
+fn newBackend(config: Partial<BackendConfig> = {}) -> Backend {
+  let be = Backend {
+    config: {
+      maxClients: 100,
+      enableCaching: true,
+      cacheTTL: 300000,
+      logLevel: 'info',
+      workers: 4,
+      wasmPath: undefined,
+      optimizationLevel: 0,
+      ...config
+    },
+    cache: new Map(),
+    compileCount: 0,
+    errorCount: 0
+  }
+  logger.debug('Backend initialized')
+  return be
+}
+
+// ─── Compilation Pipeline ────────────────────────────────────────
+
+async fn compile(self: Backend, options: CompileOptions) -> CompilationResult {
+  let startTime = performance.now()
+  let cacheKey = self.getCacheKey(options)
+
+  if self.config.enableCaching {
+    let cached = self.cache.get(cacheKey)
+    if cached && Date.now() - cached.timestamp < self.config.cacheTTL {
+      logger.debug('Compilation cache hit')
+      return cached.result
+    }
+  }
+
+  logger.info(`Compiling: ${options.filename} (target: ${options.target}, opt: ${options.optimize})`)
+
+  let errors: CompilerError[] = []
+  let warnings: CompilerWarning[] = []
+  let ast: any = null
+  let bytecode: Uint8Array | undefined
+  let timing: TimingInfo = { parseMs: 0, typeCheckMs: 0, emitMs: 0, totalMs: 0 }
+
+  try {
+    let parseStart = performance.now()
+    ast = await self.parseSource(options.source, options.filename)
+    timing.parseMs = performance.now() - parseStart
+    logger.debug(`Parse completed in ${timing.parseMs.toFixed(2)}ms`)
+
+    if !options.noTypeCheck {
+      let tcStart = performance.now()
+      let typeErrors = await self.typeCheckAst(ast)
+      timing.typeCheckMs = performance.now() - tcStart
+
+      for err in typeErrors {
+        if err.severity == 'error' {
+          errors.push(err)
+        } else {
+          warnings.push({
+            message: err.message,
+            line: err.line,
+            column: err.column,
+            file: err.file,
+            code: 'TYPE_WARN'
+          })
+        }
+      }
+      logger.debug(`Type check completed in ${timing.typeCheckMs.toFixed(2)}ms (${typeErrors.length} issues)`)
+    }
+
+    let emitStart = performance.now()
+    bytecode = await self.emitBytecode(ast, options)
+    timing.emitMs = performance.now() - emitStart
+    logger.debug(`Emit completed in ${timing.emitMs.toFixed(2)}ms`)
+
+    self.compileCount++
+
+  } catch (e: any) {
+    errors.push({ type: 'emit', message: e.message || String(e), severity: 'error' })
+    self.errorCount++
+  }
+
+  timing.totalMs = performance.now() - startTime
+
+  let metadata: CompileMetadata = {
+    sourceSize: options.source.length,
+    bytecodeSize: bytecode?.length || 0,
+    constantCount: self.countConstants(ast),
+    instructionCount: bytecode ? Math.floor(bytecode.length / 4) : 0,
+    optimizationLevel: options.optimize
+  }
+
+  let result: CompilationResult = {
+    success: errors.length == 0,
+    bytecode: bytecode,
+    ast: options.target == 'run' ? undefined : ast,
+    errors: errors,
+    warnings: warnings,
+    timing: timing,
+    metadata: metadata
+  }
+
+  if self.config.enableCaching && result.success {
+    self.cache.set(cacheKey, { result: result, timestamp: Date.now() })
+  }
+
+  logger.info(`Compilation ${result.success ? 'succeeded' : 'failed'} in ${timing.totalMs.toFixed(2)}ms`)
+  return result
+}
+
+// ─── Execution ───────────────────────────────────────────────────
+
+async fn execute(self: Backend, options: ExecuteOptions) -> VMResult {
+  let startTime = performance.now()
+  logger.info('Executing bytecode...')
+
+  try {
+    let vm = await self.initializeVM(options.wasmPath)
+    let timeout = options.timeoutMs || 30000
+    let result = await self.runWithTimeout(vm, options.bytecode, timeout)
+    let executionTime = performance.now() - startTime
+    logger.success(`Execution completed in ${executionTime.toFixed(2)}ms`)
+
+    return { success: true, value: result, output: '', executionTimeMs: executionTime }
+
+  } catch (e: any) {
+    let executionTime = performance.now() - startTime
+    logger.failure(`Execution failed: ${e.message}`)
+    return { success: false, output: '', error: e.message || String(e), executionTimeMs: executionTime }
+  }
+}
+
+// ─── Bytecode Analysis ───────────────────────────────────────────
+
+fn disassemble(self: Backend, bytecode: Uint8Array) -> BytecodeDisassembly {
+  let view = new DataView(bytecode.buffer, bytecode.byteOffset, bytecode.byteLength)
+
+  let header: BytecodeHeader = {
+    magic: view.getUint32(0, true),
+    version: view.getUint8(4),
+    flags: view.getUint8(5),
+    constantCount: view.getUint16(6, true),
+    protoCount: view.getUint16(8, true),
+    codeSize: view.getUint32(10, true)
+  }
+
+  let constants: ConstantEntry[] = []
+  let offset = 14
+  for i in 0..header.constantCount {
+    let type = view.getUint8(offset++)
+    let value: any
+    let typeName: ConstantEntry['type']
+
+    if type == 0 { typeName = 'nil'; value = null }
+    else if type == 1 { typeName = 'boolean'; value = view.getUint8(offset++) != 0 }
+    else if type == 2 { typeName = 'number'; value = view.getFloat64(offset, true); offset += 8 }
+    else { typeName = 'string'; let len = view.getUint32(offset, true); offset += 4; value = self.readString(view, offset, len); offset += len }
+
+    constants.push({ index: i, type: typeName, value: value })
+  }
+
+  let protos: ProtoEntry[] = []
+  for i in 0..header.protoCount {
+    let pConsts = view.getUint32(offset, true); offset += 4
+    let pInsts = view.getUint32(offset, true); offset += 4
+    let pUpvals = view.getUint32(offset, true); offset += 4
+    let pParams = view.getUint32(offset, true); offset += 4
+    protos.push({ index: i, constants: pConsts, instructions: pInsts, upvalues: pUpvals, params: pParams })
+
+    for j in 0..pConsts {
+      let t = view.getUint8(offset++)
+      if t == 2 { offset += 8 }
+      else if t == 3 { let slen = view.getUint32(offset, true); offset += 4 + slen }
+    }
+    offset += pInsts * 4 + pUpvals * 4
+    for j in 0..pUpvals {
+      offset += 4
+      let nameLen = view.getUint8(offset++)
+      offset += nameLen
+    }
+  }
+
+  let instructions: InstructionEntry[] = []
+  let opNames = self.getOpNames()
+  let codeStart = offset
+  let instCount = header.codeSize / 4
+
+  for i in 0..instCount {
+    let inst = view.getUint32(codeStart + i * 4, true)
+    let op = inst & 0x3F
+    let a = (inst >> 6) & 0xFF
+    let b = (inst >> 14) & 0x1FF
+    let c = (inst >> 23) & 0x1FF
+    let sbx = (inst >> 14) & 0x3FFFF
+    let signedSbx = sbx >= 0x20000 ? sbx - 0x40000 : sbx
+
+    instructions.push({
+      address: i,
+      opcode: op,
+      opName: op < opNames.length ? opNames[op] : `UNKNOWN(${op})`,
+      a: a, b: b, c: c,
+      sbx: signedSbx,
+      comment: self.getInstructionComment(op, a, b, c, signedSbx, constants)
+    })
+  }
+
+  return { header: header, constants: constants, protos: protos, instructions: instructions }
+}
+
+// ─── Formatting ──────────────────────────────────────────────────
+
+async fn format(self: Backend, options: FormatOptions) -> string {
+  logger.info('Formatting source code...')
+  return options.source
+}
+
+// ─── Benchmarking ────────────────────────────────────────────────
+
+async fn benchmark(self: Backend, source: string, filename: string, iterations: number) -> any {
+  logger.info(`Running benchmark: ${iterations} iterations`)
+
+  let compileStart = performance.now()
+  let result = await self.compile({
+    source: source,
+    filename: filename,
+    target: 'bytecode',
+    optimize: 2,
+    noTypeCheck: false,
+    stripDebug: true,
+    sourceMap: false
+  })
+  let compileTimeMs = performance.now() - compileStart
+
+  if !result.success || !result.bytecode {
+    throw new Error('Compilation failed during benchmark')
+  }
+
+  for i in 0..Math.min(100, iterations) {
+    await self.execute({ bytecode: result.bytecode })
+  }
+
+  let memBefore = process.memoryUsage().heapUsed
+  let start = performance.now()
+
+  for i in 0..iterations {
+    await self.execute({ bytecode: result.bytecode })
+  }
+
+  let totalTimeMs = performance.now() - start
+  let memAfter = process.memoryUsage().heapUsed
+
+  return {
+    iterations: iterations,
+    totalTimeMs: totalTimeMs,
+    avgTimeMs: totalTimeMs / iterations,
+    throughput: iterations / (totalTimeMs / 1000),
+    compileTimeMs: compileTimeMs,
+    memoryDelta: memAfter - memBefore
+  }
+}
+
+// ─── Cache Management ────────────────────────────────────────────
+
+fn clearCache(self: Backend) -> void {
+  self.cache.clear()
+  logger.info('Compilation cache cleared')
+}
+
+fn getCacheStats(self: Backend) -> { size: number; hitRate: number } {
+  return { size: self.cache.size, hitRate: 0 }
+}
+
+// ─── Statistics ──────────────────────────────────────────────────
+
+fn getStats(self: Backend) -> Record<string, any> {
+  return {
+    compileCount: self.compileCount,
+    errorCount: self.errorCount,
+    cacheSize: self.cache.size,
+    successRate: self.compileCount > 0 
+      ? ((self.compileCount - self.errorCount) / self.compileCount * 100).toFixed(2) + '%'
+      : 'N/A'
+  }
+}
+
+// ─── Private Helpers ─────────────────────────────────────────────
+
+private async fn parseSource(self: Backend, source: string, filename: string) -> any {
+  logger.debug('Parsing source...')
+  return { type: 'Program', body: [] }
+}
+
+private async fn typeCheckAst(self: Backend, ast: any) -> CompilerError[] {
+  logger.debug('Type checking...')
+  return []
+}
+
+private async fn emitBytecode(self: Backend, ast: any, options: CompileOptions) -> Uint8Array {
+  logger.debug('Emitting bytecode...')
+  return new Uint8Array([0x4C5A, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+}
+
+private async fn initializeVM(self: Backend, wasmPath?: string) -> any {
+  logger.debug('Initializing VM...')
+  return { execute: (bc: Uint8Array) => undefined }
+}
+
+private async fn runWithTimeout(self: Backend, vm: any, bytecode: Uint8Array, timeoutMs: number) -> any {
+  return new Promise((resolve, reject) => {
+    let timer = setTimeout(() => reject(new Error('Execution timeout')), timeoutMs)
+    try {
+      let result = vm.execute(bytecode)
+      clearTimeout(timer)
+      resolve(result)
+    } catch (e) {
+      clearTimeout(timer)
+      reject(e)
+    }
+  })
+}
+
+private fn countConstants(self: Backend, ast: any) -> number {
+  return 0
+}
+
+private fn getCacheKey(self: Backend, options: CompileOptions) -> string {
+  return `${options.filename}:${options.target}:${options.optimize}:${options.source.length}`
+}
+
+private fn readString(self: Backend, view: DataView, offset: number, len: number) -> string {
+  let bytes = new Uint8Array(view.buffer, view.byteOffset + offset, len)
+  return new TextDecoder().decode(bytes)
+}
+
+private fn getOpNames(self: Backend) -> string[] {
+  return [
+    'NOP', 'LOADK', 'LOADNIL', 'LOADBOOL', 'LOADINT', 'MOVE',
+    'GETGLOBAL', 'SETGLOBAL', 'GETUPVAL', 'SETUPVAL', 'GETTABLE',
+    'SETTABLE', 'NEWTABLE', 'SELF', 'ADD', 'SUB', 'MUL', 'DIV',
+    'MOD', 'POW', 'UNM', 'NOT', 'LEN', 'CONCAT', 'JMP', 'EQ',
+    'LT', 'LE', 'TEST', 'TESTSET', 'CALL', 'TAILCALL', 'RETURN',
+    'FORLOOP', 'FORPREP', 'TFORLOOP', 'SETLIST', 'CLOSE', 'CLOSURE',
+    'VARARG', 'TYPECHECK', 'ASSERT', 'ASYNC', 'AWAIT', 'SIMD_ADD',
+    'SIMD_MUL', 'SIMD_DOT', 'GUARD', 'DEFER', 'MATCH'
+  ]
+}
+
+private fn getInstructionComment(self: Backend, op: number, a: number, b: number, c: number, sbx: number, constants: ConstantEntry[]) -> string | undefined {
+  let opNames = self.getOpNames()
+  let name = op < opNames.length ? opNames[op] : 'UNKNOWN'
+
+  match name {
+    'LOADK' => {
+      let k = constants[b]
+      return k ? `R[${a}] = ${JSON.stringify(k.value)}` : undefined
+    }
+    'LOADBOOL' => return `R[${a}] = ${b != 0}`
+    'LOADINT' => return `R[${a}] = ${b}`
+    'ADD' | 'SUB' | 'MUL' | 'DIV' => return `R[${a}] = R[${b}] ${name} R[${c}]`
+    'JMP' => return `PC += ${sbx}`
+    'CALL' => return `R[${a}](${b > 0 ? b - 1 : 'vararg'} args, ${c - 1} results)`
+    'RETURN' => return b > 0 ? `return R[${a}] .. R[${a + b - 2}]` : 'return'
+    _ => return undefined
+  }
+}
+
+let backend = newBackend()
