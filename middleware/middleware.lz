@@ -1,0 +1,371 @@
+// middleware/middleware.lz
+// Communication layer between Client Dictionary and Backend
+
+import { MiddlewareContext, MiddlewareResult, ClientInfo, LogLevel } from '../shared/types'
+import { ClientDictionary, ClientRequest, ClientResponse } from '../client/client'
+import { Backend, CompileOptions, ExecuteOptions, FormatOptions } from '../backend/backend'
+import { logger } from '../shared/logger'
+
+type MiddlewareFn = (ctx: MiddlewareContext, next: () => Promise<MiddlewareResult>) => Promise<MiddlewareResult>
+
+struct PipelineConfig {
+  enableValidation: boolean
+  enableLogging: boolean
+  enableMetrics: boolean
+  enableRetry: boolean
+  maxRetries: number
+  retryDelayMs: number
+  timeoutMs: number
+}
+
+struct MiddlewarePipeline {
+  private middlewares: MiddlewareFn[]
+  private config: PipelineConfig
+}
+
+fn newMiddlewarePipeline(config: Partial<PipelineConfig> = {}) -> MiddlewarePipeline {
+  return MiddlewarePipeline {
+    middlewares: [],
+    config: {
+      enableValidation: true,
+      enableLogging: true,
+      enableMetrics: true,
+      enableRetry: false,
+      maxRetries: 3,
+      retryDelayMs: 1000,
+      timeoutMs: 30000,
+      ...config
+    }
+  }
+}
+
+fn use(self: MiddlewarePipeline, middleware: MiddlewareFn) -> MiddlewarePipeline {
+  self.middlewares.push(middleware)
+  return self
+}
+
+async fn execute(self: MiddlewarePipeline, ctx: MiddlewareContext) -> MiddlewareResult {
+  let index = 0
+
+  let next = async (): Promise<MiddlewareResult> => {
+    if index >= self.middlewares.length {
+      return { success: true, context: ctx }
+    }
+    let middleware = self.middlewares[index++]
+    return middleware(ctx, next)
+  }
+
+  return next()
+}
+
+// ─── Built-in Middlewares ────────────────────────────────────────
+
+let validationMiddleware: MiddlewareFn = async (ctx, next) => {
+  logger.debug(`[Middleware] Validating request: ${ctx.action}`)
+
+  let validActions = ['compile', 'execute', 'disassemble', 'format', 'benchmark', 'check', 'stats']
+  if !validActions.includes(ctx.action) {
+    return {
+      success: false,
+      context: ctx,
+      error: `Invalid action: ${ctx.action}. Valid actions: ${validActions.join(', ')}`
+    }
+  }
+
+  if (ctx.action == 'compile' || ctx.action == 'check' || ctx.action == 'format') && !ctx.payload.source && !ctx.payload.input {
+    return {
+      success: false,
+      context: ctx,
+      error: 'Missing required field: source or input file'
+    }
+  }
+
+  if ctx.action == 'execute' && !ctx.payload.bytecode {
+    return {
+      success: false,
+      context: ctx,
+      error: 'Missing required field: bytecode'
+    }
+  }
+
+  return next()
+}
+
+let loggingMiddleware: MiddlewareFn = async (ctx, next) => {
+  let start = performance.now()
+  logger.info(`[Middleware] → ${ctx.action} (client: ${ctx.clientId}, req: ${ctx.requestId})`)
+
+  let result = await next()
+
+  let elapsed = performance.now() - start
+  let status = result.success ? '✓' : '✗'
+  logger.info(`[Middleware] ← ${ctx.action} ${status} in ${elapsed.toFixed(2)}ms`)
+
+  return result
+}
+
+let metricsMiddleware: MiddlewareFn = async (ctx, next) => {
+  let start = performance.now()
+  let result = await next()
+  let elapsed = performance.now() - start
+
+  ctx.metadata.processingTimeMs = elapsed
+  ctx.metadata.timestamp = Date.now()
+
+  return result
+}
+
+fn newRetryMiddleware(maxRetries: number, delayMs: number): MiddlewareFn {
+  return async (ctx, next) => {
+    let lastError: string | undefined
+
+    for attempt in 0..maxRetries + 1 {
+      let result = await next()
+      if result.success { return result }
+
+      lastError = result.error
+      if attempt < maxRetries {
+        logger.warn(`[Middleware] Retry ${attempt + 1}/${maxRetries} for ${ctx.action}: ${lastError}`)
+        await new Promise(r => setTimeout(r, delayMs * (attempt + 1)))
+      }
+    }
+
+    return {
+      success: false,
+      context: ctx,
+      error: `Failed after ${maxRetries + 1} attempts: ${lastError}`
+    }
+  }
+}
+
+let authMiddleware: MiddlewareFn = async (ctx, next) => {
+  if ctx.metadata.requiresAuth && !ctx.metadata.authenticated {
+    return {
+      success: false,
+      context: ctx,
+      error: 'Authentication required'
+    }
+  }
+  return next()
+}
+
+fn newRateLimitMiddleware(maxRequests: number, windowMs: number): MiddlewareFn {
+  let requests = new Map<string, number[]>()
+
+  return async (ctx, next) => {
+    let now = Date.now()
+    let clientRequests = requests.get(ctx.clientId) || []
+
+    let recent = clientRequests.filter(t => now - t < windowMs)
+
+    if recent.length >= maxRequests {
+      return {
+        success: false,
+        context: ctx,
+        error: `Rate limit exceeded: ${maxRequests} requests per ${windowMs}ms`
+      }
+    }
+
+    recent.push(now)
+    requests.set(ctx.clientId, recent)
+    return next()
+  }
+}
+
+// ─── Middleware Orchestrator ─────────────────────────────────────
+
+struct MiddlewareOrchestrator {
+  private clientDict: ClientDictionary
+  private backend: Backend
+  private pipeline: MiddlewarePipeline
+  private requestCounter: number
+}
+
+fn newMiddlewareOrchestrator(clientDict: ClientDictionary, backend: Backend) -> MiddlewareOrchestrator {
+  let orch = MiddlewareOrchestrator {
+    clientDict: clientDict,
+    backend: backend,
+    pipeline: newMiddlewarePipeline(),
+    requestCounter: 0
+  }
+
+  orch.pipeline
+    .use(loggingMiddleware)
+    .use(validationMiddleware)
+    .use(metricsMiddleware)
+    .use(newRateLimitMiddleware(100, 60000))
+    .use(authMiddleware)
+
+  return orch
+}
+
+// ─── Public API ────────────────────────────────────────────────
+
+async fn handleRequest(self: MiddlewareOrchestrator, clientId: string, action: string, payload: any) -> ClientResponse {
+  let requestId = self.clientDict.enqueueRequest(clientId, action, payload)
+  let startTime = performance.now()
+
+  try {
+    let ctx: MiddlewareContext = {
+      requestId: requestId,
+      clientId: clientId,
+      timestamp: Date.now(),
+      action: action,
+      payload: payload,
+      metadata: {}
+    }
+
+    let pipelineResult = await self.pipeline.execute(ctx)
+
+    if !pipelineResult.success {
+      let response: ClientResponse = {
+        requestId: requestId,
+        success: false,
+        error: pipelineResult.error || 'Pipeline validation failed',
+        processingTimeMs: performance.now() - startTime
+      }
+      self.clientDict.storeResponse(requestId, response)
+      return response
+    }
+
+    let result = await self.executeAction(action, payload)
+
+    let response: ClientResponse = {
+      requestId: requestId,
+      success: result.success,
+      data: result.data,
+      error: result.error,
+      processingTimeMs: performance.now() - startTime
+    }
+
+    self.clientDict.updateClientActivity(clientId)
+    self.clientDict.storeResponse(requestId, response)
+    return response
+
+  } catch (e: any) {
+    let response: ClientResponse = {
+      requestId: requestId,
+      success: false,
+      error: e.message || String(e),
+      processingTimeMs: performance.now() - startTime
+    }
+    self.clientDict.storeResponse(requestId, response)
+    return response
+  }
+}
+
+// ─── Action Handlers ────────────────────────────────────────────
+
+private async fn executeAction(self: MiddlewareOrchestrator, action: string, payload: any) -> { success: boolean; data?: any; error?: string } {
+  match action {
+    'compile' => {
+      let source = payload.source || await self.readFile(payload.input)
+      let filename = payload.input || '<stdin>'
+      let result = await self.backend.compile({
+        source: source,
+        filename: filename,
+        target: payload.target || 'bytecode',
+        optimize: payload.optimize || 0,
+        noTypeCheck: payload.noTypeCheck || false,
+        stripDebug: payload.stripDebug || false,
+        sourceMap: payload.sourceMap || false
+      })
+      return {
+        success: result.success,
+        data: {
+          bytecode: result.bytecode,
+          errors: result.errors,
+          warnings: result.warnings,
+          timing: result.timing,
+          metadata: result.metadata
+        },
+        error: result.errors.length > 0 ? result.errors.map(e => e.message).join('; ') : undefined
+      }
+    }
+
+    'execute' => {
+      let result = await self.backend.execute({
+        bytecode: payload.bytecode,
+        wasmPath: payload.wasmPath,
+        timeoutMs: payload.timeoutMs
+      })
+      return {
+        success: result.success,
+        data: { value: result.value, output: result.output },
+        error: result.error
+      }
+    }
+
+    'disassemble' => {
+      let disasm = self.backend.disassemble(payload.bytecode)
+      return { success: true, data: disasm }
+    }
+
+    'format' => {
+      let formatted = await self.backend.format({
+        source: payload.source,
+        indentSize: payload.indentSize || 2,
+        useTabs: payload.useTabs || false,
+        maxLineLength: payload.maxLineLength || 100
+      })
+      return { success: true, data: { formatted: formatted } }
+    }
+
+    'benchmark' => {
+      let source = payload.source || await self.readFile(payload.input)
+      let filename = payload.input || '<stdin>'
+      let result = await self.backend.benchmark(source, filename, payload.iterations || 1000)
+      return { success: true, data: result }
+    }
+
+    'check' => {
+      let source = payload.source || await self.readFile(payload.input)
+      let filename = payload.input || '<stdin>'
+      let result = await self.backend.compile({
+        source: source,
+        filename: filename,
+        target: 'bytecode',
+        optimize: 0,
+        noTypeCheck: false,
+        stripDebug: true,
+        sourceMap: false
+      })
+      return {
+        success: result.success,
+        data: { errors: result.errors, warnings: result.warnings },
+        error: result.errors.length > 0 ? 'Type check failed' : undefined
+      }
+    }
+
+    'stats' => {
+      return {
+        success: true,
+        data: {
+          backend: self.backend.getStats(),
+          clients: self.clientDict.getStats()
+        }
+      }
+    }
+
+    _ => return { success: false, error: `Unhandled action: ${action}` }
+  }
+}
+
+// ─── Utility ─────────────────────────────────────────────────────
+
+private async fn readFile(self: MiddlewareOrchestrator, filepath: string) -> string {
+  let fs = await import('fs')
+  return fs.readFileSync(filepath, 'utf-8')
+}
+
+fn getPipeline(self: MiddlewareOrchestrator) -> MiddlewarePipeline {
+  return self.pipeline
+}
+
+fn addMiddleware(self: MiddlewareOrchestrator, middleware: MiddlewareFn) -> void {
+  self.pipeline.use(middleware)
+}
+
+fn createOrchestrator(clientDict: ClientDictionary, backend: Backend) -> MiddlewareOrchestrator {
+  return newMiddlewareOrchestrator(clientDict, backend)
+}
