@@ -1,0 +1,239 @@
+// client/client.lz
+// Client Dictionary - Manages client connections, sessions, and request routing
+
+import { ClientInfo, MiddlewareContext, MiddlewareResult, LogLevel } from '../shared/types'
+import { logger } from '../shared/logger'
+
+struct ClientRequest {
+  id: string
+  clientId: string
+  action: string
+  payload: any
+  timestamp: number
+  priority: number
+}
+
+struct ClientResponse {
+  requestId: string
+  success: boolean
+  data?: any
+  error?: string
+  processingTimeMs: number
+}
+
+struct ClientDictionary {
+  private clients: Map<string, ClientInfo>
+  private requestQueue: ClientRequest[]
+  private requestHistory: Map<string, ClientResponse>
+  private maxHistorySize: number
+  private maxClients: number
+  private requestCounter: number
+}
+
+fn newClientDictionary(maxClients: number = 100) -> ClientDictionary {
+  let cd = ClientDictionary {
+    clients: new Map(),
+    requestQueue: [],
+    requestHistory: new Map(),
+    maxHistorySize: 1000,
+    maxClients: maxClients,
+    requestCounter: 0
+  }
+  logger.debug(`ClientDictionary initialized (maxClients: ${maxClients})`)
+  return cd
+}
+
+// ─── Client Management ─────────────────────────────────────────────
+
+fn registerClient(self: ClientDictionary, name: string, version: string, capabilities: string[] = []) -> string {
+  if self.clients.size >= self.maxClients {
+    throw new Error(`Maximum client limit (${self.maxClients}) reached`)
+  }
+
+  let id = self.generateClientId()
+  let now = new Date()
+
+  let client: ClientInfo = {
+    id: id,
+    name: name,
+    version: version,
+    capabilities: capabilities,
+    connectedAt: now,
+    lastActivity: now,
+    requestsHandled: 0,
+    active: true
+  }
+
+  self.clients.set(id, client)
+  logger.info(`Client registered: ${name} v${version} (${id})`)
+  return id
+}
+
+fn unregisterClient(self: ClientDictionary, clientId: string) -> boolean {
+  let client = self.clients.get(clientId)
+  if !client {
+    logger.warn(`Attempted to unregister unknown client: ${clientId}`)
+    return false
+  }
+  client.active = false
+  self.clients.delete(clientId)
+  logger.info(`Client unregistered: ${client.name} (${clientId})`)
+  return true
+}
+
+fn getClient(self: ClientDictionary, clientId: string) -> ClientInfo | undefined {
+  return self.clients.get(clientId)
+}
+
+fn getAllClients(self: ClientDictionary) -> ClientInfo[] {
+  return Array.from(self.clients.values())
+}
+
+fn getActiveClients(self: ClientDictionary) -> ClientInfo[] {
+  return self.getAllClients().filter(c => c.active)
+}
+
+fn updateClientActivity(self: ClientDictionary, clientId: string) -> void {
+  let client = self.clients.get(clientId)
+  if client {
+    client.lastActivity = new Date()
+    client.requestsHandled++
+  }
+}
+
+fn hasCapability(self: ClientDictionary, clientId: string, capability: string) -> boolean {
+  let client = self.clients.get(clientId)
+  return client ? client.capabilities.includes(capability) : false
+}
+
+// ─── Request Queue Management ──────────────────────────────────────
+
+fn enqueueRequest(self: ClientDictionary, clientId: string, action: string, payload: any, priority: number = 5) -> string {
+  if !self.clients.has(clientId) {
+    throw new Error(`Unknown client: ${clientId}`)
+  }
+
+  let requestId = self.generateRequestId()
+  let request: ClientRequest = {
+    id: requestId,
+    clientId: clientId,
+    action: action,
+    payload: payload,
+    timestamp: Date.now(),
+    priority: priority
+  }
+
+  let insertIndex = self.requestQueue.findIndex(r => r.priority > priority)
+  if insertIndex == -1 {
+    self.requestQueue.push(request)
+  } else {
+    self.requestQueue.splice(insertIndex, 0, request)
+  }
+
+  logger.debug(`Request enqueued: ${requestId} (action: ${action}, priority: ${priority})`)
+  return requestId
+}
+
+fn dequeueRequest(self: ClientDictionary) -> ClientRequest | undefined {
+  return self.requestQueue.shift()
+}
+
+fn peekRequest(self: ClientDictionary) -> ClientRequest | undefined {
+  return self.requestQueue[0]
+}
+
+fn getQueueLength(self: ClientDictionary) -> number {
+  return self.requestQueue.length
+}
+
+fn getQueueForClient(self: ClientDictionary, clientId: string) -> ClientRequest[] {
+  return self.requestQueue.filter(r => r.clientId == clientId)
+}
+
+fn clearQueue(self: ClientDictionary) -> void {
+  self.requestQueue = []
+  logger.info('Request queue cleared')
+}
+
+// ─── Response History ────────────────────────────────────────────────
+
+fn storeResponse(self: ClientDictionary, requestId: string, response: ClientResponse) -> void {
+  self.requestHistory.set(requestId, response)
+  if self.requestHistory.size > self.maxHistorySize {
+    let firstKey = self.requestHistory.keys().next().value
+    self.requestHistory.delete(firstKey)
+  }
+}
+
+fn getResponse(self: ClientDictionary, requestId: string) -> ClientResponse | undefined {
+  return self.requestHistory.get(requestId)
+}
+
+fn getClientHistory(self: ClientDictionary, clientId: string) -> ClientResponse[] {
+  return Array.from(self.requestHistory.values())
+    .filter(r => r.requestId.startsWith(clientId))
+}
+
+// ─── Statistics ────────────────────────────────────────────────────
+
+fn getStats(self: ClientDictionary) -> Record<string, any> {
+  let clients = self.getAllClients()
+  return {
+    totalClients: clients.length,
+    activeClients: clients.filter(c => c.active).length,
+    queueLength: self.requestQueue.length,
+    historySize: self.requestHistory.size,
+    totalRequestsHandled: clients.reduce((sum, c) => sum + c.requestsHandled, 0),
+    averageRequestsPerClient: clients.length > 0 
+      ? clients.reduce((sum, c) => sum + c.requestsHandled, 0) / clients.length 
+      : 0
+  }
+}
+
+fn printStats(self: ClientDictionary) -> void {
+  let stats = self.getStats()
+  logger.group('═══ Client Dictionary Statistics ═══')
+  logger.info(`Total Clients:     ${stats.totalClients}`)
+  logger.info(`Active Clients:    ${stats.activeClients}`)
+  logger.info(`Queue Length:      ${stats.queueLength}`)
+  logger.info(`History Size:      ${stats.historySize}`)
+  logger.info(`Requests Handled:  ${stats.totalRequestsHandled}`)
+  logger.info(`Avg Req/Client:    ${stats.averageRequestsPerClient.toFixed(2)}`)
+  logger.divider()
+}
+
+// ─── Health Check ────────────────────────────────────────────────
+
+fn healthCheck(self: ClientDictionary) -> { healthy: boolean; issues: string[] } {
+  let issues: string[] = []
+
+  if self.clients.size > self.maxClients * 0.9 {
+    issues.push(`Client count near limit: ${self.clients.size}/${self.maxClients}`)
+  }
+
+  if self.requestQueue.length > 100 {
+    issues.push(`Request queue backlog: ${self.requestQueue.length} pending`)
+  }
+
+  let now = Date.now()
+  for (id, client) in self.clients {
+    if now - client.lastActivity.getTime() > 30 * 60 * 1000 {
+      issues.push(`Stale client detected: ${client.name} (${id})`)
+    }
+  }
+
+  return { healthy: issues.length == 0, issues: issues }
+}
+
+// ─── Private Helpers ─────────────────────────────────────────────
+
+private fn generateClientId(self: ClientDictionary) -> string {
+  return `cli_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+}
+
+private fn generateRequestId(self: ClientDictionary) -> string {
+  self.requestCounter++
+  return `req_${self.requestCounter}_${Date.now()}`
+}
+
+let clientDictionary = newClientDictionary()
