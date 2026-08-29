@@ -1,0 +1,18 @@
+// Luazi File System Module
+
+pub fn getFs() -> FsModule {
+  return {
+    readFile: fn(path: string) -> string {
+      // Runtime-provided implementation
+      return ""
+    },
+    writeFile: fn(path: string, data: string) -> nil {
+      // Runtime-provided implementation
+      return nil
+    },
+    exists: fn(path: string) -> bool {
+      // Runtime-provided implementation
+      return false
+    },
+  }
+}
