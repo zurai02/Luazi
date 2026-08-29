@@ -1,0 +1,936 @@
+// bootstrap.lz — Luazi 64-bit Self-Hosting Compiler Bootstrap
+// Main entry point that progressively builds the compiler in Luazi itself.
+//
+// 64-bit Architecture:
+//   - Instructions: 64-bit (8 bytes)
+//   - Registers: 64-bit wide, 16-bit indexable (up to 65,536 registers)
+//   - Constants: 40-bit index (up to ~1 trillion constants)
+//   - Memory: 64-bit addressing
+//   - Numbers: IEEE 754 double-precision (f64)
+//
+// Usage:
+//   luazi bootstrap.lz                    # Run bootstrap
+//   luazi bootstrap.lz --compile <file>   # Compile a .lz file
+//   luazi bootstrap.lz --run <file>       # Run a .lz file
+//   luazi bootstrap.lz --repl             # Start REPL
+//   luazi bootstrap.lz --check <file>     # Type-check only
+//   luazi bootstrap.lz --test             # Run bootstrap tests
+
+// ============================================================================
+// IMPORTS — Self-hosted compiler modules (64-bit)
+// ============================================================================
+
+import { tokenize, Token, TokenType } from "src/core/tokenizer"
+import { parse, Parser, AST } from "src/core/parser"
+import { typeCheck, TypeChecker, TypeError } from "src/core/typechecker"
+import { emit, BytecodeEmitter, OpCode } from "src/core/emitter"
+import { VM, VMValue, run as vmRun } from "src/core/vm"
+import { Span, StringBuilder, is_digit, is_alpha, is_alphanumeric } from "src/core/core"
+
+import { getStdLib, FsModule, PathModule, CryptoModule, ProcessModule } from "src/stdlib/index"
+import { getFs } from "src/stdlib/fs"
+import { getPath } from "src/stdlib/path"
+import { getCrypto } from "src/stdlib/crypto"
+import { getProcess } from "src/stdlib/process"
+
+import {
+  print, println, format, assert, panic, type_of, to_string, to_number,
+  len, contains, index_of, reverse, sort, map, filter, reduce, find,
+  flatten, zip, range, repeat, memoize, compose, pipe, curry, partial,
+  id, const, flip, apply, bind, timer, benchmark,
+  Option, Result, Vec, Map
+} from "src/stdlib/core"
+
+import {
+  Vec2, Vec3, Vec4, Mat4,
+  PI, TAU, E, PHI, EPSILON, INF, NAN,
+  abs, floor, ceil, round, trunc, min, max, clamp, lerp, inv_lerp, remap,
+  sign, sqrt, cbrt, pow, exp, log, ln, log10, log2,
+  sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, deg, rad,
+  Random, random, random_range, random_int,
+  simd_add, simd_mul, simd_dot, simd_length, simd_normalize,
+  smoothstep, smootherstep, bezier,
+  perlin_noise, fractal_noise
+} from "src/stdlib/math"
+
+// ============================================================================
+// 64-BIT BOOTSTRAP CONFIGURATION
+// ============================================================================
+
+pub struct BootstrapConfig {
+  version: string = "0.2.0-64bit",
+  stage: BootstrapStage = BootstrapStage.Stage1,
+  verbose: bool = false,
+  strictTypes: bool = true,
+  enableSIMD: bool = true,
+  enableJIT: bool = false,
+  maxMemoryPages: u64 = 256,
+  stackSize: u64 = 4096,
+}
+
+pub enum BootstrapStage {
+  Stage0,   // TypeScript frontend only
+  Stage1,   // Luazi parser + typechecker, TS emitter/VM
+  Stage2,   // Luazi parser + typechecker + emitter, TS VM
+  Stage3,   // Full Luazi self-host (parser, typechecker, emitter, VM)
+}
+
+// ============================================================================
+// 64-BIT COMPILATION PIPELINE
+// ============================================================================
+
+pub struct CompileResult {
+  success: bool,
+  bytecode: [u8] | nil,
+  ast: AST.Program | nil,
+  errors: [string],
+  warnings: [string],
+  metadata: CompileMetadata | nil,
+}
+
+pub struct CompileMetadata {
+  sourceSize: u64,
+  bytecodeSize: u64,
+  constantCount: u64,
+  instructionCount: u64,
+  compileTimeMs: f64,
+}
+
+pub fn compile(source: string, fileName: string, config: BootstrapConfig = BootstrapConfig {}) -> CompileResult {
+  let t = timer()
+  t.start()
+
+  let errors: [string] = []
+  let warnings: [string] = []
+
+  // Stage 1+: Tokenize with self-hosted tokenizer
+  if config.stage >= BootstrapStage.Stage1 {
+    let tokens = tokenize(source, fileName)
+    if config.verbose {
+      println("[bootstrap] Tokenized " + tokens.len() + " tokens")
+    }
+
+    // Stage 1+: Parse with self-hosted parser
+    let program = parse(tokens, fileName)
+    if config.verbose {
+      println("[bootstrap] Parsed AST with " + program.body.len() + " statements")
+    }
+
+    // Stage 1+: Type-check with self-hosted typechecker
+    if config.strictTypes {
+      let typeErrors = typeCheck(program, config.strictTypes)
+      for err in typeErrors {
+        errors.push(err.message + " at " + fileName + ":" + err.span.start_line)
+      }
+      if typeErrors.len() > 0 {
+        return CompileResult {
+          success: false,
+          bytecode: nil,
+          ast: program,
+          errors: errors,
+          warnings: warnings,
+          metadata: nil,
+        }
+      }
+    }
+
+    // Stage 2+: Emit 64-bit bytecode with self-hosted emitter
+    if config.stage >= BootstrapStage.Stage2 {
+      let bytecode = emit(program)
+      let compileTime = t.stop()
+
+      return CompileResult {
+        success: true,
+        bytecode: bytecode,
+        ast: program,
+        errors: errors,
+        warnings: warnings,
+        metadata: CompileMetadata {
+          sourceSize: source.len() as u64,
+          bytecodeSize: bytecode.len() as u64,
+          constantCount: 0,  // Would extract from emitter state
+          instructionCount: (bytecode.len() as u64) / 8,
+          compileTimeMs: compileTime,
+        },
+      }
+    }
+
+    // Stage 1: Return AST only (no bytecode yet)
+    return CompileResult {
+      success: true,
+      bytecode: nil,
+      ast: program,
+      errors: errors,
+      warnings: warnings,
+      metadata: CompileMetadata {
+        sourceSize: source.len() as u64,
+        bytecodeSize: 0,
+        constantCount: 0,
+        instructionCount: 0,
+        compileTimeMs: t.stop(),
+      },
+    }
+  }
+
+  // Stage 0: Fallback to TypeScript frontend (not implemented in pure Luazi)
+  return CompileResult {
+    success: false,
+    bytecode: nil,
+    ast: nil,
+    errors: ["Stage 0 compilation requires TypeScript frontend"],
+    warnings: warnings,
+    metadata: nil,
+  }
+}
+
+// ============================================================================
+// 64-BIT EXECUTION ENGINE
+// ============================================================================
+
+pub struct ExecuteResult {
+  success: bool,
+  value: VMValue | nil,
+  error: string | nil,
+  executionTimeMs: f64,
+}
+
+pub fn execute(bytecode: [u8], config: BootstrapConfig = BootstrapConfig {}) -> ExecuteResult {
+  let t = timer()
+  t.start()
+
+  let vm = VM.new({
+    memoryPages: 64,
+    maxMemoryPages: config.maxMemoryPages,
+    stackSize: config.stackSize,
+    enableSIMD: config.enableSIMD,
+    enableJIT: config.enableJIT,
+  })
+
+  try {
+    let result = vm.execute(bytecode)
+    return ExecuteResult {
+      success: true,
+      value: result,
+      error: nil,
+      executionTimeMs: t.stop(),
+    }
+  } catch (e: any) {
+    return ExecuteResult {
+      success: false,
+      value: nil,
+      error: e.message,
+      executionTimeMs: t.stop(),
+    }
+  }
+}
+
+pub fn runSource(source: string, fileName: string = "<repl>", config: BootstrapConfig = BootstrapConfig {}) -> ExecuteResult {
+  let compileResult = compile(source, fileName, config)
+  if !compileResult.success {
+    return ExecuteResult {
+      success: false,
+      value: nil,
+      error: "Compilation failed: " + compileResult.errors.join("; "),
+      executionTimeMs: 0,
+    }
+  }
+
+  if compileResult.bytecode == nil {
+    return ExecuteResult {
+      success: false,
+      value: nil,
+      error: "No bytecode generated (Stage 1 only)",
+      executionTimeMs: 0,
+    }
+  }
+
+  return execute(compileResult.bytecode, config)
+}
+
+// ============================================================================
+// REPL
+// ============================================================================
+
+pub struct ReplSession {
+  history: [string] = [],
+  variables: Map<string, VMValue> = Map.new(),
+  lineCount: u64 = 0,
+}
+
+pub fn startRepl(config: BootstrapConfig = BootstrapConfig {}) -> nil {
+  println("Luazi " + config.version + " 64-bit Bootstrap REPL")
+  println("Stage: " + config.stage.toString())
+  println("Type 'exit' to quit, 'help' for commands")
+  println("")
+
+  let session = ReplSession {}
+
+  while true {
+    print("luazi> ")
+    let line = io.read_line()
+
+    if line == "exit" || line == "quit" {
+      println("Goodbye!")
+      break
+    }
+
+    if line == "help" {
+      println("Commands:")
+      println("  help       Show this help")
+      println("  clear      Clear screen")
+      println("  history    Show input history")
+      println("  stage      Show current bootstrap stage")
+      println("  stats      Show VM statistics")
+      println("  exit       Exit REPL")
+      continue
+    }
+
+    if line == "clear" {
+      print("\x1b[2J\x1b[H")
+      continue
+    }
+
+    if line == "history" {
+      for i in 0..session.history.len() {
+        println("  " + (i + 1) + ": " + session.history[i])
+      }
+      continue
+    }
+
+    if line == "stage" {
+      println("Current stage: " + config.stage.toString())
+      continue
+    }
+
+    if line == "stats" {
+      println("Session lines: " + session.lineCount)
+      println("History entries: " + session.history.len())
+      continue
+    }
+
+    if line.trim().len() == 0 {
+      continue
+    }
+
+    session.history.push(line)
+    session.lineCount = session.lineCount + 1
+
+    let result = runSource(line, "<repl>", config)
+    if result.success {
+      if result.value != nil {
+        println(result.value.toString())
+      }
+    } else {
+      println("Error: " + result.error)
+    }
+  }
+}
+
+// ============================================================================
+// 64-BIT TEST SUITE
+// ============================================================================
+
+pub struct TestResult {
+  name: string,
+  passed: bool,
+  error: string | nil,
+  timeMs: f64,
+}
+
+pub fn runTests(config: BootstrapConfig = BootstrapConfig {}) -> [TestResult] {
+  let results: [TestResult] = []
+
+  // Test 1: Core type system
+  results.push(test("Option type", fn() -> bool {
+    let some = Option.Some(42)
+    let none = Option.None
+    match some {
+      Option.Some(v) => return v == 42,
+      Option.None => return false,
+    }
+  }))
+
+  // Test 2: Result type
+  results.push(test("Result type", fn() -> bool {
+    let ok = Result.Ok(42)
+    match ok {
+      Result.Ok(v) => return v == 42,
+      Result.Err(e) => return false,
+    }
+  }))
+
+  // Test 3: Vec operations
+  results.push(test("Vec operations", fn() -> bool {
+    let v = Vec.new<f64>()
+    v.push(1.0)
+    v.push(2.0)
+    v.push(3.0)
+    return v.len() == 3 && v.get(1) == 2.0
+  }))
+
+  // Test 4: SIMD math (64-bit)
+  results.push(test("SIMD vectors (64-bit)", fn() -> bool {
+    let a = Vec4.new(1.0, 2.0, 3.0, 4.0)
+    let b = Vec4.new(5.0, 6.0, 7.0, 8.0)
+    let c = a.add(b)
+    return c.x == 6.0 && c.y == 8.0 && c.z == 10.0 && c.w == 12.0
+  }))
+
+  // Test 5: 64-bit precision
+  results.push(test("64-bit precision", fn() -> bool {
+    let big = 9007199254740992.0  // 2^53
+    let bigger = big + 1.0
+    return bigger == 9007199254740993.0
+  }))
+
+  // Test 6: Pattern matching
+  results.push(test("Pattern matching", fn() -> bool {
+    let x = 42
+    match x {
+      0 => return false,
+      1 => return false,
+      42 => return true,
+      _ => return false,
+    }
+  }))
+
+  // Test 7: Guard statements
+  results.push(test("Guard statement", fn() -> bool {
+    fn safeDiv(a: f64, b: f64) -> f64 {
+      guard b != 0.0 else {
+        return 0.0
+      }
+      return a / b
+    }
+    return safeDiv(10.0, 2.0) == 5.0 && safeDiv(10.0, 0.0) == 0.0
+  }))
+
+  // Test 8: Defer
+  results.push(test("Defer execution", fn() -> bool {
+    let mut executed = false
+    fn testDefer() {
+      defer executed = true
+    }
+    testDefer()
+    return executed
+  }))
+
+  // Test 9: Higher-order functions
+  results.push(test("Higher-order functions", fn() -> bool {
+    let nums = [1.0, 2.0, 3.0, 4.0, 5.0]
+    let doubled = map(nums, fn(x: f64) -> f64 { return x * 2.0 })
+    return doubled[0] == 2.0 && doubled[4] == 10.0
+  }))
+
+  // Test 10: Functional composition
+  results.push(test("Function composition", fn() -> bool {
+    let add1 = fn(x: f64) -> f64 { return x + 1.0 }
+    let mul2 = fn(x: f64) -> f64 { return x * 2.0 }
+    let composed = compose(add1, mul2)
+    return composed(5.0) == 11.0
+  }))
+
+  // Test 11: Math module (64-bit)
+  results.push(test("Math utilities (64-bit)", fn() -> bool {
+    return abs(-5.0) == 5.0 && clamp(10.0, 0.0, 5.0) == 5.0 && lerp(0.0, 10.0, 0.5) == 5.0
+  }))
+
+  // Test 12: Random (64-bit)
+  results.push(test("Random generator", fn() -> bool {
+    let rng = Random.new(12345)
+    let n1 = rng.next()
+    let n2 = rng.next()
+    return n1 >= 0.0 && n1 < 1.0 && n2 >= 0.0 && n2 < 1.0 && n1 != n2
+  }))
+
+  // Test 13: String builder
+  results.push(test("String builder", fn() -> bool {
+    let sb = StringBuilder.new()
+    sb.append("Hello")
+    sb.append(" ")
+    sb.append("World")
+    return sb.to_string() == "Hello World"
+  }))
+
+  // Test 14: Tokenizer
+  results.push(test("Tokenizer", fn() -> bool {
+    let tokens = tokenize("let x = 42", "test.lz")
+    return tokens.len() > 0 && tokens[0].type == TokenType.LET
+  }))
+
+  // Test 15: Parser
+  results.push(test("Parser", fn() -> bool {
+    let tokens = tokenize("fn main() { return 42 }", "test.lz")
+    let ast = parse(tokens, "test.lz")
+    return ast.body.len() > 0 && ast.body[0].kind == "FnDecl"
+  }))
+
+  // Test 16: Type checker
+  results.push(test("Type checker", fn() -> bool {
+    let source = "let x: f64 = 42.0"
+    let tokens = tokenize(source, "test.lz")
+    let ast = parse(tokens, "test.lz")
+    let errors = typeCheck(ast, true)
+    return errors.len() == 0
+  }))
+
+  // Print summary
+  let passed = filter(results, fn(r) -> bool { return r.passed })
+  println("\n═══ 64-bit Bootstrap Test Results ═══")
+  println("Passed: " + passed.len() + " / " + results.len())
+  for r in results {
+    let icon = r.passed ? "✓" : "✗"
+    println("  " + icon + " " + r.name + " (" + r.timeMs.toFixed(2) + "ms)")
+    if !r.passed && r.error != nil {
+      println("    Error: " + r.error)
+    }
+  }
+  println("")
+
+  return results
+}
+
+fn test(name: string, f: fn() -> bool) -> TestResult {
+  let t = timer()
+  t.start()
+  try {
+    let passed = f()
+    return TestResult { name: name, passed: passed, error: nil, timeMs: t.stop() }
+  } catch (e: any) {
+    return TestResult { name: name, passed: false, error: e.message, timeMs: t.stop() }
+  }
+}
+
+// ============================================================================
+// CLI INTERFACE
+// ============================================================================
+
+pub fn printUsage() -> nil {
+  println("Luazi 64-bit Bootstrap Compiler v0.2.0")
+  println("")
+  println("Usage: luazi bootstrap.lz [options] <command> [args...]")
+  println("")
+  println("Commands:")
+  println("  run <file>         Compile and run a Luazi source file")
+  println("  compile <file>     Compile to 64-bit bytecode (.lzc)")
+  println("  check <file>       Type-check only (no codegen)")
+  println("  exec <file>        Execute a compiled bytecode file")
+  println("  disasm <file>      Disassemble 64-bit bytecode")
+  println("  fmt <file>         Format source code")
+  println("  repl               Start interactive REPL")
+  println("  test               Run bootstrap test suite")
+  println("  bench <file>       Benchmark compilation/execution")
+  println("  init [name]        Initialize a new Luazi project")
+  println("")
+  println("Options:")
+  println("  --stage <n>        Bootstrap stage (0-3)")
+  println("  --strict           Enable strict type checking")
+  println("  --verbose          Verbose output")
+  println("  --no-simd          Disable SIMD optimizations")
+  println("  --help             Show this help")
+  println("  --version          Show version")
+}
+
+pub fn main(args: [string]) -> number {
+  if args.len() == 0 {
+    printUsage()
+    return 0
+  }
+
+  let mut config = BootstrapConfig {}
+  let mut command = ""
+  let mut cmdArgs: [string] = []
+  let mut i = 0
+
+  // Parse options
+  while i < args.len() {
+    let arg = args[i]
+    if arg == "--help" || arg == "-h" {
+      printUsage()
+      return 0
+    }
+    if arg == "--version" || arg == "-v" {
+      println("Luazi 64-bit Bootstrap v" + config.version)
+      return 0
+    }
+    if arg == "--verbose" {
+      config.verbose = true
+      i = i + 1
+      continue
+    }
+    if arg == "--strict" {
+      config.strictTypes = true
+      i = i + 1
+      continue
+    }
+    if arg == "--no-simd" {
+      config.enableSIMD = false
+      i = i + 1
+      continue
+    }
+    if arg == "--stage" {
+      i = i + 1
+      if i < args.len() {
+        let stageNum = to_number(args[i])
+        match stageNum {
+          Option.Some(n) => {
+            if n == 0.0 { config.stage = BootstrapStage.Stage0 }
+            else if n == 1.0 { config.stage = BootstrapStage.Stage1 }
+            else if n == 2.0 { config.stage = BootstrapStage.Stage2 }
+            else if n == 3.0 { config.stage = BootstrapStage.Stage3 }
+          }
+          Option.None => {}
+        }
+      }
+      i = i + 1
+      continue
+    }
+    if arg.startsWith("-") {
+      println("Unknown option: " + arg)
+      return 1
+    }
+    if command == "" {
+      command = arg
+    } else {
+      cmdArgs.push(arg)
+    }
+    i = i + 1
+  }
+
+  if config.verbose {
+    println("[bootstrap] Stage: " + config.stage.toString())
+    println("[bootstrap] SIMD: " + config.enableSIMD)
+    println("[bootstrap] Strict: " + config.strictTypes)
+    println("[bootstrap] Architecture: 64-bit")
+  }
+
+  match command {
+    "run" => return cmdRun(cmdArgs, config),
+    "compile" => return cmdCompile(cmdArgs, config),
+    "check" => return cmdCheck(cmdArgs, config),
+    "exec" => return cmdExec(cmdArgs, config),
+    "disasm" => return cmdDisasm(cmdArgs, config),
+    "fmt" => return cmdFmt(cmdArgs, config),
+    "repl" => { startRepl(config); return 0 },
+    "test" => { runTests(config); return 0 },
+    "bench" => return cmdBench(cmdArgs, config),
+    "init" => return cmdInit(cmdArgs, config),
+    "" => { printUsage(); return 0 },
+    _ => { println("Unknown command: " + command); printUsage(); return 1 },
+  }
+}
+
+// ============================================================================
+// COMMAND IMPLEMENTATIONS
+// ============================================================================
+
+fn cmdRun(args: [string], config: BootstrapConfig) -> number {
+  if args.len() < 1 {
+    println("Error: No file specified")
+    return 1
+  }
+  let path = args[0]
+
+  let fs = getFs()
+  if !fs.exists(path) {
+    println("Error: File not found: " + path)
+    return 1
+  }
+
+  let source = fs.readFile(path)
+  let result = runSource(source, path, config)
+
+  if result.success {
+    if result.value != nil {
+      println(result.value.toString())
+    }
+    if config.verbose {
+      println("[bootstrap] Executed in " + result.executionTimeMs.toFixed(2) + "ms")
+    }
+    return 0
+  } else {
+    println("Error: " + result.error)
+    return 1
+  }
+}
+
+fn cmdCompile(args: [string], config: BootstrapConfig) -> number {
+  if args.len() < 1 {
+    println("Error: No file specified")
+    return 1
+  }
+  let path = args[0]
+
+  let fs = getFs()
+  if !fs.exists(path) {
+    println("Error: File not found: " + path)
+    return 1
+  }
+
+  let source = fs.readFile(path)
+  let result = compile(source, path, config)
+
+  if !result.success {
+    println("Compilation failed:")
+    for err in result.errors {
+      println("  ✗ " + err)
+    }
+    return 1
+  }
+
+  if result.bytecode == nil {
+    println("Warning: No bytecode generated (Stage 1)")
+    return 0
+  }
+
+  let outputPath = path.replace(/\.lz$/, ".lzc")
+  fs.writeFile(outputPath, result.bytecode as string)
+  println("Compiled (64-bit): " + path + " → " + outputPath)
+
+  if result.metadata != nil {
+    let m = result.metadata
+    println("  Source: " + m.sourceSize + " bytes → Bytecode: " + m.bytecodeSize + " bytes")
+    println("  Instructions: " + m.instructionCount)
+    println("  Compile time: " + m.compileTimeMs.toFixed(2) + "ms")
+  }
+
+  return 0
+}
+
+fn cmdCheck(args: [string], config: BootstrapConfig) -> number {
+  if args.len() < 1 {
+    println("Error: No file specified")
+    return 1
+  }
+  let path = args[0]
+
+  let fs = getFs()
+  if !fs.exists(path) {
+    println("Error: File not found: " + path)
+    return 1
+  }
+
+  let source = fs.readFile(path)
+  let result = compile(source, path, config)
+
+  if result.success && result.errors.len() == 0 {
+    println("✓ Type check passed")
+    if result.warnings.len() > 0 {
+      println("Warnings:")
+      for w in result.warnings {
+        println("  ⚠ " + w)
+      }
+    }
+    return 0
+  } else {
+    println("✗ Type check failed:")
+    for err in result.errors {
+      println("  " + err)
+    }
+    return 1
+  }
+}
+
+fn cmdExec(args: [string], config: BootstrapConfig) -> number {
+  if args.len() < 1 {
+    println("Error: No file specified")
+    return 1
+  }
+  let path = args[0]
+
+  let fs = getFs()
+  if !fs.exists(path) {
+    println("Error: File not found: " + path)
+    return 1
+  }
+
+  let bytecodeStr = fs.readFile(path)
+  let bytecode: [u8] = []
+  for i in 0..bytecodeStr.len() {
+    bytecode.push(bytecodeStr[i] as u8)
+  }
+
+  let result = execute(bytecode, config)
+  if result.success {
+    if result.value != nil {
+      println(result.value.toString())
+    }
+    return 0
+  } else {
+    println("Execution error: " + result.error)
+    return 1
+  }
+}
+
+fn cmdDisasm(args: [string], config: BootstrapConfig) -> number {
+  if args.len() < 1 {
+    println("Error: No file specified")
+    return 1
+  }
+  let path = args[0]
+
+  let fs = getFs()
+  if !fs.exists(path) {
+    println("Error: File not found: " + path)
+    return 1
+  }
+
+  let bytecodeStr = fs.readFile(path)
+  println("64-bit Disassembly of " + path + ":")
+  println("  Size: " + bytecodeStr.len() + " bytes")
+  println("  Instructions: " + (bytecodeStr.len() / 8) + " (64-bit)")
+  return 0
+}
+
+fn cmdFmt(args: [string], config: BootstrapConfig) -> number {
+  if args.len() < 1 {
+    println("Error: No file specified")
+    return 1
+  }
+  let path = args[0]
+
+  let fs = getFs()
+  if !fs.exists(path) {
+    println("Error: File not found: " + path)
+    return 1
+  }
+
+  let source = fs.readFile(path)
+  let tokens = tokenize(source, path)
+  let formatted = formatTokens(tokens)
+  fs.writeFile(path, formatted)
+  println("Formatted: " + path)
+  return 0
+}
+
+fn formatTokens(tokens: [Token]) -> string {
+  let sb = StringBuilder.new()
+  let mut prevType = TokenType.EOF
+
+  for tok in tokens {
+    if tok.type == TokenType.EOF {
+      break
+    }
+    if tok.type == TokenType.NEWLINE {
+      sb.append("\n")
+      prevType = tok.type
+      continue
+    }
+    if tok.type == TokenType.INDENT {
+      continue
+    }
+    if tok.type == TokenType.DEDENT {
+      continue
+    }
+
+    if needsSpace(prevType, tok.type) {
+      sb.append(" ")
+    }
+
+    sb.append(tok.lexeme)
+    prevType = tok.type
+  }
+
+  return sb.to_string()
+}
+
+fn needsSpace(a: TokenType, b: TokenType) -> bool {
+  return a != TokenType.LPAREN && a != TokenType.LBRACKET && a != TokenType.DOT &&
+         b != TokenType.RPAREN && b != TokenType.RBRACKET && b != TokenType.COMMA &&
+         b != TokenType.SEMICOLON && a != TokenType.NEWLINE
+}
+
+fn cmdBench(args: [string], config: BootstrapConfig) -> number {
+  if args.len() < 1 {
+    println("Error: No file specified")
+    return 1
+  }
+  let path = args[0]
+  let iterations = if args.len() > 1 { to_number(args[1]).unwrapOr(1000.0) as u64 } else { 1000 }
+
+  let fs = getFs()
+  if !fs.exists(path) {
+    println("Error: File not found: " + path)
+    return 1
+  }
+
+  let source = fs.readFile(path)
+
+  let compileBench = benchmark("compile", fn() {
+    compile(source, path, config)
+  }, iterations)
+
+  println("═══ 64-bit Benchmark: " + path + " ═══")
+  println("Iterations: " + iterations)
+  println("Compile: " + compileBench.total_ms.toFixed(2) + "ms total, " +
+          compileBench.avg_ms.toFixed(4) + "ms avg, " +
+          compileBench.ops_per_sec.toFixed(0) + " ops/sec")
+
+  return 0
+}
+
+fn cmdInit(args: [string], config: BootstrapConfig) -> number {
+  let name = if args.len() > 0 { args[0] } else { "my-luazi-project" }
+  let fs = getFs()
+  let path = getPath()
+
+  let dir = path.resolve(name)
+  if fs.exists(dir) {
+    println("Error: Directory already exists: " + dir)
+    return 1
+  }
+
+  fs.writeFile(path.join(dir, "src", "main.lz"), `// ${name}
+
+fn main() {
+    print("Hello, Luazi 64-bit!")
+}
+
+main()
+`)
+
+  fs.writeFile(path.join(dir, "package.json"), `{
+  "name": "${name}",
+  "version": "0.1.0",
+  "description": "A Luazi 64-bit project",
+  "main": "src/main.lz",
+  "scripts": {
+    "build": "luazi compile src/main.lz",
+    "run": "luazi run src/main.lz",
+    "test": "luazi test"
+  },
+  "keywords": ["luazi"],
+  "license": "MIT"
+}
+`)
+
+  fs.writeFile(path.join(dir, ".gitignore"), `*.lzc
+dist/
+node_modules/
+`)
+
+  println("Created " + name + " (64-bit)")
+  println("  cd " + name)
+  println("  luazi run src/main.lz")
+  return 0
+}
+
+// ============================================================================
+// ENTRY POINT
+// ============================================================================
+
+let process = getProcess()
+let args = process.args()
+
+let mut startIdx = 0
+if args.len() > 0 && args[0].contains("bootstrap.lz") {
+  startIdx = 1
+}
+
+let userArgs: [string] = []
+for i in startIdx..args.len() {
+  userArgs.push(args[i])
+}
+
+let exitCode = main(userArgs)
+process.exit(exitCode)
