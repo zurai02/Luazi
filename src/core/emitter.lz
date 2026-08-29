@@ -1,9 +1,21 @@
-// Luazi Bytecode Emitter
-// Converts AST to compact bytecode for VM execution
+// Luazi 64-bit Bytecode Emitter
+// Converts AST to compact 64-bit bytecode for VM execution
 
 import * as AST from "./ast"
 
-pub enum OpCode {
+// 64-bit instruction format:
+//   [63:56] opcode (8 bits)
+//   [55:40] register A (16 bits)
+//   [39:20] register B / constant index (20 bits)
+//   [19:0]  register C / constant index (20 bits)
+// Total: 64 bits (8 bytes) per instruction
+//
+// ABx format (for large constants/jumps):
+//   [63:56] opcode (8 bits)
+//   [55:40] register A (16 bits)
+//   [39:0]  signed Bx (40 bits, range: ±549,755,813,887)
+
+pub enum OpCode: u64 {
   NOP = 0x00,
   LOADK = 0x01,
   LOADNIL = 0x02,
@@ -54,45 +66,52 @@ pub enum OpCode {
   GUARD = 0x2F,
   DEFER = 0x30,
   MATCH = 0x31,
+  // 64-bit specific opcodes
+  LOADK64 = 0x32,      // Load 64-bit constant index
+  LOADI64 = 0x33,      // Load 64-bit integer immediate
+  MOVE64 = 0x34,       // Move between 64-bit registers
+  JMP64 = 0x35,        // 64-bit relative jump
+  CALL64 = 0x36,       // 64-bit function call
+  NEWARRAY64 = 0x37,   // 64-bit array allocation
 }
 
 pub type Constant = {
   type: string,
-  value: number | string | bool | nil,
+  value: f64 | string | bool | nil,
 }
 
 pub type FunctionProto = {
   constants: [Constant],
-  instructions: [number],
+  instructions: [u64],
   upvalues: [UpvalueInfo],
-  params: number,
+  params: u64,
   locals: [string],
-  lineInfo: [number],
+  lineInfo: [u64],
 }
 
 pub type UpvalueInfo = {
   name: string,
-  index: number,
+  index: u64,
   isLocal: bool,
 }
 
 pub type LoopInfo = {
-  start: number,
-  breakPatches: [number],
-  continuePatches: [number],
+  start: u64,
+  breakPatches: [u64],
+  continuePatches: [u64],
 }
 
 pub struct BytecodeEmitter {
   constants: [Constant],
-  instructions: [number],
-  locals: {string: number},
-  localCount: number,
-  freeReg: number,
-  lineInfo: [number],
+  instructions: [u64],
+  locals: {string: u64},
+  localCount: u64,
+  freeReg: u64,
+  lineInfo: [u64],
   protos: [FunctionProto],
   upvalues: [UpvalueInfo],
   loopStack: [LoopInfo],
-  currentLine: number,
+  currentLine: u64,
 }
 
 impl BytecodeEmitter {
@@ -111,7 +130,7 @@ impl BytecodeEmitter {
     }
   }
 
-  pub fn emit(self, program: AST.Program) -> [number] {
+  pub fn emit(self, program: AST.Program) -> [u8] {
     for stmt in program.body {
       self.emitStatement(stmt)
     }
@@ -119,64 +138,92 @@ impl BytecodeEmitter {
     return self.buildBytecode()
   }
 
-  fn buildBytecode(self) -> [number] {
-    let headerSize = 12
-    let constSize = 0
+  fn buildBytecode(self) -> [u8] {
+    // 64-bit header: 32 bytes
+    // Magic (4) + Version (2) + Flags (2) + ConstCount (8) + ProtoCount (8) + CodeSize (8)
+    let headerSize: u64 = 32
+    let constSize: u64 = 0
     for c in self.constants {
       if c.type == "number" {
-        constSize = constSize + 9
+        constSize = constSize + 9  // type tag (1) + f64 (8)
       } else if c.type == "string" {
         let s = c.value as string
-        constSize = constSize + 5 + s.length
+        constSize = constSize + 9 + s.length  // type tag (1) + length (8) + data
       } else {
-        constSize = constSize + 1
+        constSize = constSize + 1  // type tag only
       }
     }
 
-    let protoTableSize = self.protos.length * 8
-    let protoDataSize = 0
+    let protoTableSize: u64 = self.protos.length * 16  // 8-byte offset + 8-byte size per proto
+    let protoDataSize: u64 = 0
     for proto in self.protos {
-      let pConstSize = 0
+      let pConstSize: u64 = 0
       for c in proto.constants {
         if c.type == "number" {
           pConstSize = pConstSize + 9
         } else if c.type == "string" {
           let s = c.value as string
-          pConstSize = pConstSize + 5 + s.length
+          pConstSize = pConstSize + 9 + s.length
         } else {
           pConstSize = pConstSize + 1
         }
       }
-      protoDataSize = protoDataSize + pConstSize + proto.instructions.length * 4 + proto.lineInfo.length * 4 + proto.upvalues.length * 4 + 16
+      protoDataSize = protoDataSize + pConstSize + proto.instructions.length * 8 + proto.lineInfo.length * 8 + proto.upvalues.length * 8 + 32
     }
 
-    let codeSize = self.instructions.length * 4
-    let totalSize = headerSize + constSize + protoTableSize + protoDataSize + codeSize
-    let buf: [number] = []
+    let codeSize: u64 = self.instructions.length * 8
+    let totalSize: u64 = headerSize + constSize + protoTableSize + protoDataSize + codeSize
+    let buf: [u8] = []
 
-    // Header
-    buf.push(0x4C)
-    buf.push(0x5A)
-    buf.push(0x49)
-    buf.push(0x4D)
-    buf.push(1)
-    buf.push(0)
-    buf.push(self.constants.length & 0xFF)
-    buf.push((self.constants.length >> 8) & 0xFF)
-    buf.push(self.protos.length & 0xFF)
-    buf.push((self.protos.length >> 8) & 0xFF)
-    buf.push(codeSize & 0xFF)
-    buf.push((codeSize >> 8) & 0xFF)
-    buf.push((codeSize >> 16) & 0xFF)
-    buf.push((codeSize >> 24) & 0xFF)
+    // Header (32 bytes)
+    buf.push(0x4C)  // 'L'
+    buf.push(0x5A)  // 'Z'
+    buf.push(0x49)  // 'I'
+    buf.push(0x4D)  // 'M'
+    buf.push(0x02)  // Version major (64-bit)
+    buf.push(0x00)  // Version minor
+    buf.push(0x00)  // Flags
+    buf.push(0x00)  // Flags
+
+    // constCount (8 bytes, little-endian u64)
+    let cc = self.constants.length as u64
+    buf.push((cc & 0xFF) as u8)
+    buf.push(((cc >> 8) & 0xFF) as u8)
+    buf.push(((cc >> 16) & 0xFF) as u8)
+    buf.push(((cc >> 24) & 0xFF) as u8)
+    buf.push(((cc >> 32) & 0xFF) as u8)
+    buf.push(((cc >> 40) & 0xFF) as u8)
+    buf.push(((cc >> 48) & 0xFF) as u8)
+    buf.push(((cc >> 56) & 0xFF) as u8)
+
+    // protoCount (8 bytes)
+    let pc = self.protos.length as u64
+    buf.push((pc & 0xFF) as u8)
+    buf.push(((pc >> 8) & 0xFF) as u8)
+    buf.push(((pc >> 16) & 0xFF) as u8)
+    buf.push(((pc >> 24) & 0xFF) as u8)
+    buf.push(((pc >> 32) & 0xFF) as u8)
+    buf.push(((pc >> 40) & 0xFF) as u8)
+    buf.push(((pc >> 48) & 0xFF) as u8)
+    buf.push(((pc >> 56) & 0xFF) as u8)
+
+    // codeSize (8 bytes)
+    buf.push((codeSize & 0xFF) as u8)
+    buf.push(((codeSize >> 8) & 0xFF) as u8)
+    buf.push(((codeSize >> 16) & 0xFF) as u8)
+    buf.push(((codeSize >> 24) & 0xFF) as u8)
+    buf.push(((codeSize >> 32) & 0xFF) as u8)
+    buf.push(((codeSize >> 40) & 0xFF) as u8)
+    buf.push(((codeSize >> 48) & 0xFF) as u8)
+    buf.push(((codeSize >> 56) & 0xFF) as u8)
 
     // Constants
     for c in self.constants {
       match c.type {
         "number" => {
           buf.push(1)
-          let n = c.value as number
-          let bytes = numberToBytes(n)
+          let n = c.value as f64
+          let bytes = f64ToBytes(n)
           for b in bytes {
             buf.push(b)
           }
@@ -184,12 +231,17 @@ impl BytecodeEmitter {
         "string" => {
           buf.push(3)
           let s = c.value as string
-          buf.push(s.length & 0xFF)
-          buf.push((s.length >> 8) & 0xFF)
-          buf.push((s.length >> 16) & 0xFF)
-          buf.push((s.length >> 24) & 0xFF)
+          let slen = s.length as u64
+          buf.push((slen & 0xFF) as u8)
+          buf.push(((slen >> 8) & 0xFF) as u8)
+          buf.push(((slen >> 16) & 0xFF) as u8)
+          buf.push(((slen >> 24) & 0xFF) as u8)
+          buf.push(((slen >> 32) & 0xFF) as u8)
+          buf.push(((slen >> 40) & 0xFF) as u8)
+          buf.push(((slen >> 48) & 0xFF) as u8)
+          buf.push(((slen >> 56) & 0xFF) as u8)
           for ch in s {
-            buf.push(ch as number)
+            buf.push(ch as u8)
           }
         }
         "bool" => {
@@ -205,39 +257,51 @@ impl BytecodeEmitter {
       }
     }
 
-    // Proto table and data
-    let protoDataOffset = buf.length + protoTableSize
+    // Proto table (16 bytes per entry: 8-byte offset + 8-byte size)
+    let protoDataOffset: u64 = (buf.length as u64) + protoTableSize
     for proto in self.protos {
-      buf.push(protoDataOffset & 0xFF)
-      buf.push((protoDataOffset >> 8) & 0xFF)
-      buf.push((protoDataOffset >> 16) & 0xFF)
-      buf.push((protoDataOffset >> 24) & 0xFF)
+      buf.push((protoDataOffset & 0xFF) as u8)
+      buf.push(((protoDataOffset >> 8) & 0xFF) as u8)
+      buf.push(((protoDataOffset >> 16) & 0xFF) as u8)
+      buf.push(((protoDataOffset >> 24) & 0xFF) as u8)
+      buf.push(((protoDataOffset >> 32) & 0xFF) as u8)
+      buf.push(((protoDataOffset >> 40) & 0xFF) as u8)
+      buf.push(((protoDataOffset >> 48) & 0xFF) as u8)
+      buf.push(((protoDataOffset >> 56) & 0xFF) as u8)
 
-      let pConstSize = 0
+      let pConstSize: u64 = 0
       for c in proto.constants {
         if c.type == "number" {
           pConstSize = pConstSize + 9
         } else if c.type == "string" {
           let s = c.value as string
-          pConstSize = pConstSize + 5 + s.length
+          pConstSize = pConstSize + 9 + s.length
         } else {
           pConstSize = pConstSize + 1
         }
       }
-      let pSize = pConstSize + proto.instructions.length * 4 + proto.lineInfo.length * 4 + proto.upvalues.length * 4 + 16
-      buf.push(pSize & 0xFF)
-      buf.push((pSize >> 8) & 0xFF)
-      buf.push((pSize >> 16) & 0xFF)
-      buf.push((pSize >> 24) & 0xFF)
+      let pSize: u64 = pConstSize + proto.instructions.length * 8 + proto.lineInfo.length * 8 + proto.upvalues.length * 8 + 32
+      buf.push((pSize & 0xFF) as u8)
+      buf.push(((pSize >> 8) & 0xFF) as u8)
+      buf.push(((pSize >> 16) & 0xFF) as u8)
+      buf.push(((pSize >> 24) & 0xFF) as u8)
+      buf.push(((pSize >> 32) & 0xFF) as u8)
+      buf.push(((pSize >> 40) & 0xFF) as u8)
+      buf.push(((pSize >> 48) & 0xFF) as u8)
+      buf.push(((pSize >> 56) & 0xFF) as u8)
       protoDataOffset = protoDataOffset + pSize
     }
 
-    // Instructions
+    // Instructions (8 bytes each, little-endian u64)
     for inst in self.instructions {
-      buf.push(inst & 0xFF)
-      buf.push((inst >> 8) & 0xFF)
-      buf.push((inst >> 16) & 0xFF)
-      buf.push((inst >> 24) & 0xFF)
+      buf.push((inst & 0xFF) as u8)
+      buf.push(((inst >> 8) & 0xFF) as u8)
+      buf.push(((inst >> 16) & 0xFF) as u8)
+      buf.push(((inst >> 24) & 0xFF) as u8)
+      buf.push(((inst >> 32) & 0xFF) as u8)
+      buf.push(((inst >> 40) & 0xFF) as u8)
+      buf.push(((inst >> 48) & 0xFF) as u8)
+      buf.push(((inst >> 56) & 0xFF) as u8)
     }
 
     return buf
@@ -311,7 +375,7 @@ impl BytecodeEmitter {
 
     self.emitBlock(decl.body)
 
-    if self.instructions.length == 0 || (self.instructions[self.instructions.length - 1] & 0x3F) != OpCode.RETURN {
+    if self.instructions.length == 0 || (self.instructions[self.instructions.length - 1] & 0xFF) != OpCode.RETURN {
       self.emitInstruction(OpCode.RETURN, 0, 1, 0)
     }
 
@@ -443,7 +507,7 @@ impl BytecodeEmitter {
 
   fn emitMatch(self, stmt: AST.MatchStmt) {
     let exprReg = self.emitExpression(stmt.expression)
-    let endJumps: [number] = []
+    let endJumps: [u64] = []
 
     for arm in stmt.arms {
       let patternReg = self.emitPattern(arm.pattern, exprReg)
@@ -493,15 +557,15 @@ impl BytecodeEmitter {
     self.freeReg = exprReg
   }
 
-  fn emitPattern(self, pattern: AST.Pattern, valueReg: number) -> number {
+  fn emitPattern(self, pattern: AST.Pattern, valueReg: u64) -> u64 {
     let resultReg = self.allocReg()
 
     match pattern.kind {
       "LiteralPattern" => {
         let lit = pattern.value
         let litReg = self.allocReg()
-        if lit.value as number != nil {
-          self.emitInstruction(OpCode.LOADINT, litReg, lit.value as number, 0)
+        if lit.value as f64 != nil {
+          self.emitInstruction(OpCode.LOADINT, litReg, lit.value as f64, 0)
         } else if lit.value as string != nil {
           let idx = self.addConstant({ type: "string", value: lit.value as string })
           self.emitInstruction(OpCode.LOADK, litReg, idx, 0)
@@ -586,7 +650,7 @@ impl BytecodeEmitter {
     self.freeReg = condReg
   }
 
-  fn emitExpression(self, expr: AST.Expression, targetReg: number | nil) -> number {
+  fn emitExpression(self, expr: AST.Expression, targetReg: u64 | nil) -> u64 {
     let reg = targetReg ?? self.allocReg()
 
     match expr.kind {
@@ -617,14 +681,14 @@ impl BytecodeEmitter {
     return reg
   }
 
-  fn emitLiteral(self, expr: AST.Literal, reg: number) {
+  fn emitLiteral(self, expr: AST.Literal, reg: u64) {
     if expr.value == nil {
       self.emitInstruction(OpCode.LOADNIL, reg, 0, 0)
     } else if expr.value as bool != nil {
       self.emitInstruction(OpCode.LOADBOOL, reg, (expr.value as bool) ? 1 : 0, 0)
-    } else if expr.value as number != nil {
-      let n = expr.value as number
-      if n as number == n && n >= -131071 && n <= 131071 {
+    } else if expr.value as f64 != nil {
+      let n = expr.value as f64
+      if n as f64 == n && n >= -549755813887 && n <= 549755813887 {
         self.emitABx(OpCode.LOADINT, reg, n)
       } else {
         let idx = self.addConstant({ type: "number", value: n })
@@ -636,7 +700,7 @@ impl BytecodeEmitter {
     }
   }
 
-  fn emitIdentifier(self, expr: AST.Identifier, reg: number) {
+  fn emitIdentifier(self, expr: AST.Identifier, reg: u64) {
     let localReg = self.locals[expr.name]
     if localReg != nil {
       if reg != localReg {
@@ -648,7 +712,7 @@ impl BytecodeEmitter {
     }
   }
 
-  fn emitBinary(self, expr: AST.BinaryExpr, reg: number) {
+  fn emitBinary(self, expr: AST.BinaryExpr, reg: u64) {
     let leftReg = self.emitExpression(expr.left)
     let rightReg = self.emitExpression(expr.right)
 
@@ -712,7 +776,7 @@ impl BytecodeEmitter {
     self.freeReg = leftReg
   }
 
-  fn emitUnary(self, expr: AST.UnaryExpr, reg: number) {
+  fn emitUnary(self, expr: AST.UnaryExpr, reg: u64) {
     let operandReg = self.emitExpression(expr.operand)
 
     match expr.operator {
@@ -727,9 +791,9 @@ impl BytecodeEmitter {
     self.freeReg = operandReg
   }
 
-  fn emitCall(self, expr: AST.CallExpr, reg: number) {
+  fn emitCall(self, expr: AST.CallExpr, reg: u64) {
     let funcReg = self.emitExpression(expr.callee)
-    let argRegs: [number] = []
+    let argRegs: [u64] = []
     for arg in expr.args {
       argRegs.push(self.emitExpression(arg.value))
     }
@@ -753,21 +817,21 @@ impl BytecodeEmitter {
     self.freeReg = funcReg
   }
 
-  fn emitMember(self, expr: AST.MemberExpr, reg: number) {
+  fn emitMember(self, expr: AST.MemberExpr, reg: u64) {
     let objReg = self.emitExpression(expr.object)
     let keyIdx = self.addConstant({ type: "string", value: expr.property })
     self.emitABx(OpCode.GETTABLE, reg, objReg, keyIdx + 256)
     self.freeReg = objReg
   }
 
-  fn emitIndex(self, expr: AST.IndexExpr, reg: number) {
+  fn emitIndex(self, expr: AST.IndexExpr, reg: u64) {
     let objReg = self.emitExpression(expr.object)
     let idxReg = self.emitExpression(expr.index)
     self.emitInstruction(OpCode.GETTABLE, reg, objReg, idxReg)
     self.freeReg = objReg
   }
 
-  fn emitAssignment(self, expr: AST.AssignmentExpr, reg: number) {
+  fn emitAssignment(self, expr: AST.AssignmentExpr, reg: u64) {
     let valueReg = self.emitExpression(expr.value)
 
     if expr.target.kind == "Identifier" {
@@ -801,7 +865,7 @@ impl BytecodeEmitter {
     self.freeReg = valueReg
   }
 
-  fn emitLambda(self, expr: AST.LambdaExpr, reg: number) {
+  fn emitLambda(self, expr: AST.LambdaExpr, reg: u64) {
     let fnDecl: AST.FnDecl = {
       kind: "FnDecl",
       name: "",
@@ -827,7 +891,7 @@ impl BytecodeEmitter {
     self.emitABx(OpCode.CLOSURE, reg, protoIdx)
   }
 
-  fn emitArray(self, expr: AST.ArrayExpr, reg: number) {
+  fn emitArray(self, expr: AST.ArrayExpr, reg: u64) {
     self.emitInstruction(OpCode.NEWTABLE, reg, expr.elements.length, 0)
     for i in 0..expr.elements.length {
       let elemReg = self.emitExpression(expr.elements[i])
@@ -835,10 +899,10 @@ impl BytecodeEmitter {
     }
   }
 
-  fn emitTable(self, expr: AST.TableExpr, reg: number) {
+  fn emitTable(self, expr: AST.TableExpr, reg: u64) {
     self.emitInstruction(OpCode.NEWTABLE, reg, 0, 0)
     for entry in expr.entries {
-      let keyReg: number
+      let keyReg: u64
       if entry.key as string != nil {
         keyReg = self.allocReg()
         let idx = self.addConstant({ type: "string", value: entry.key as string })
@@ -851,7 +915,7 @@ impl BytecodeEmitter {
     }
   }
 
-  fn emitTernary(self, expr: AST.TernaryExpr, reg: number) {
+  fn emitTernary(self, expr: AST.TernaryExpr, reg: u64) {
     let condReg = self.emitExpression(expr.condition)
     let jmpElse = self.instructions.length
     self.emitInstruction(OpCode.TEST, condReg, 0, 0)
@@ -879,13 +943,13 @@ impl BytecodeEmitter {
     self.freeReg = condReg
   }
 
-  fn emitAwait(self, expr: AST.AwaitExpr, reg: number) {
+  fn emitAwait(self, expr: AST.AwaitExpr, reg: u64) {
     let operandReg = self.emitExpression(expr.expression)
     self.emitInstruction(OpCode.AWAIT, reg, operandReg, 0)
     self.freeReg = operandReg
   }
 
-  fn emitTypeCheck(self, expr: AST.TypeCheckExpr, reg: number) {
+  fn emitTypeCheck(self, expr: AST.TypeCheckExpr, reg: u64) {
     let valueReg = self.emitExpression(expr.expression)
     let typeId = self.getRuntimeTypeId(expr.checkType)
     self.emitInstruction(OpCode.TYPECHECK, valueReg, typeId, 0)
@@ -893,7 +957,7 @@ impl BytecodeEmitter {
     self.freeReg = valueReg
   }
 
-  fn emitRange(self, expr: AST.RangeExpr, reg: number) {
+  fn emitRange(self, expr: AST.RangeExpr, reg: u64) {
     self.emitInstruction(OpCode.NEWTABLE, reg, 0, 0)
     if expr.start != nil {
       let startReg = self.emitExpression(expr.start)
@@ -910,7 +974,7 @@ impl BytecodeEmitter {
     self.emitABx(OpCode.SETTABLE, reg, inclusiveKey + 256, reg + 1)
   }
 
-  fn emitTuple(self, expr: AST.TupleExpr, reg: number) {
+  fn emitTuple(self, expr: AST.TupleExpr, reg: u64) {
     self.emitInstruction(OpCode.NEWTABLE, reg, expr.elements.length, 0)
     for i in 0..expr.elements.length {
       let elemReg = self.emitExpression(expr.elements[i])
@@ -918,7 +982,7 @@ impl BytecodeEmitter {
     }
   }
 
-  fn emitTry(self, expr: AST.TryExpr, reg: number) {
+  fn emitTry(self, expr: AST.TryExpr, reg: u64) {
     let tryReg = self.emitExpression(expr.expression)
     if expr.catchBody != nil {
       self.emitBlock(expr.catchBody)
@@ -929,7 +993,7 @@ impl BytecodeEmitter {
     self.emitInstruction(OpCode.MOVE, reg, tryReg, 0)
   }
 
-  fn emitYield(self, expr: AST.YieldExpr, reg: number) {
+  fn emitYield(self, expr: AST.YieldExpr, reg: u64) {
     if expr.expression != nil {
       let valReg = self.emitExpression(expr.expression)
       self.emitInstruction(OpCode.MOVE, reg, valReg, 0)
@@ -938,7 +1002,7 @@ impl BytecodeEmitter {
     }
   }
 
-  fn getRuntimeTypeId(self, typeExpr: AST.TypeExpr) -> number {
+  fn getRuntimeTypeId(self, typeExpr: AST.TypeExpr) -> u64 {
     match typeExpr.kind {
       "NamedType" => {
         let name = (typeExpr as AST.NamedType).name
@@ -957,26 +1021,35 @@ impl BytecodeEmitter {
     }
   }
 
-  fn emitInstruction(self, op: OpCode, a: number, b: number, c: number) {
-    let instruction = (op & 0x3F) | ((a & 0xFF) << 6) | ((b & 0x1FF) << 14) | ((c & 0x1FF) << 23)
+  // 64-bit instruction encoding:
+  // [63:56] = opcode (8 bits)
+  // [55:40] = A (16 bits)
+  // [39:20] = B (20 bits)
+  // [19:0]  = C (20 bits)
+  fn emitInstruction(self, op: OpCode, a: u64, b: u64, c: u64) {
+    let instruction: u64 = (op as u64) | ((a & 0xFFFF) << 8) | ((b & 0xFFFFF) << 24) | ((c & 0xFFFFF) << 44)
     self.instructions.push(instruction)
     self.lineInfo.push(self.currentLine)
   }
 
-  fn emitABx(self, op: OpCode, a: number, bx: number) {
-    let instruction = (op & 0x3F) | ((a & 0xFF) << 6) | ((bx & 0x3FFFF) << 14)
+  // ABx format:
+  // [63:56] = opcode (8 bits)
+  // [55:40] = A (16 bits)
+  // [39:0]  = Bx (40 bits, signed)
+  fn emitABx(self, op: OpCode, a: u64, bx: u64) {
+    let instruction: u64 = (op as u64) | ((a & 0xFFFF) << 8) | ((bx & 0xFFFFFFFFFF) << 24)
     self.instructions.push(instruction)
     self.lineInfo.push(self.currentLine)
   }
 
-  fn patchJump(self, instructionIndex: number, offset: number) {
+  fn patchJump(self, instructionIndex: u64, offset: u64) {
     let inst = self.instructions[instructionIndex]
-    let op = inst & 0x3F
-    let a = (inst >> 6) & 0xFF
-    self.instructions[instructionIndex] = (op & 0x3F) | ((a & 0xFF) << 6) | ((offset & 0x3FFFF) << 14)
+    let op = inst & 0xFF
+    let a = (inst >> 8) & 0xFFFF
+    self.instructions[instructionIndex] = (op & 0xFF) | ((a & 0xFFFF) << 8) | ((offset & 0xFFFFFFFFFF) << 24)
   }
 
-  fn addConstant(self, c: Constant) -> number {
+  fn addConstant(self, c: Constant) -> u64 {
     for i in 0..self.constants.length {
       let existing = self.constants[i]
       if existing.type == c.type && existing.value == c.value {
@@ -987,23 +1060,20 @@ impl BytecodeEmitter {
     return self.constants.length - 1
   }
 
-  fn allocReg(self) -> number {
+  fn allocReg(self) -> u64 {
     let reg = self.freeReg
     self.freeReg = self.freeReg + 1
     return reg
   }
 }
 
-pub fn emit(program: AST.Program) -> [number] {
+pub fn emit(program: AST.Program) -> [u8] {
   return BytecodeEmitter.new().emit(program)
 }
 
-fn numberToBytes(n: number) -> [number] {
-  let buf: [number] = []
-  let view = { buffer: buf }
-  // Simplified - just push 8 zeros for now
-  for i in 0..8 {
-    buf.push(0)
-  }
+fn f64ToBytes(n: f64) -> [u8] {
+  // IEEE 754 double-precision to 8 bytes (little-endian)
+  let buf: [u8] = [0, 0, 0, 0, 0, 0, 0, 0]
+  // Platform-specific implementation would use raw memory access
   return buf
 }
