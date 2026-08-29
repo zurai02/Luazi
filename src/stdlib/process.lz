@@ -1,0 +1,22 @@
+// Luazi Process Module
+
+pub fn getProcess() -> ProcessModule {
+  return {
+    args: fn() -> [string] {
+      // Runtime-provided implementation
+      return []
+    },
+    exit: fn(code: number) -> nil {
+      // Runtime-provided implementation
+      return nil
+    },
+    env: fn(key: string) -> string | nil {
+      // Runtime-provided implementation
+      return nil
+    },
+    cwd: fn() -> string {
+      // Runtime-provided implementation
+      return "."
+    },
+  }
+}
