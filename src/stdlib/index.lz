@@ -1,0 +1,58 @@
+// Luazi Standard Library
+
+import { getFs } from "./fs"
+import { getPath } from "./path"
+import { getCrypto } from "./crypto"
+import { getProcess } from "./process"
+
+pub type StdLib = {
+  fs: FsModule,
+  path: PathModule,
+  crypto: CryptoModule,
+  process: ProcessModule,
+}
+
+pub type FsModule = {
+  readFile: fn(string) -> string,
+  writeFile: fn(string, string) -> nil,
+  exists: fn(string) -> bool,
+}
+
+pub type PathModule = {
+  join: fn(...string) -> string,
+  resolve: fn(...string) -> string,
+  dirname: fn(string) -> string,
+  basename: fn(string, string | nil) -> string,
+  extname: fn(string) -> string,
+}
+
+pub type CryptoModule = {
+  hash: fn(string, string) -> string,
+  randomBytes: fn(number) -> string,
+}
+
+pub type ProcessModule = {
+  args: fn() -> [string],
+  exit: fn(number) -> nil,
+  env: fn(string) -> string | nil,
+  cwd: fn() -> string,
+}
+
+let stdlib: StdLib | nil = nil
+
+pub fn getStdLib() -> StdLib {
+  if stdlib == nil {
+    stdlib = {
+      fs: getFs(),
+      path: getPath(),
+      crypto: getCrypto(),
+      process: getProcess(),
+    }
+  }
+  return stdlib
+}
+
+pub fn register(vm: any) {
+  let lib = getStdLib()
+  // Register stdlib functions with VM
+}
