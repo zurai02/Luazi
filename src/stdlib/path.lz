@@ -1,0 +1,51 @@
+// Luazi Path Module
+
+pub fn getPath() -> PathModule {
+  return {
+    join: fn(...segments: [string]) -> string {
+      let result = ""
+      for i in 0..segments.length {
+        if i > 0 {
+          result = result + "/"
+        }
+        result = result + segments[i]
+      }
+      return result
+    },
+    resolve: fn(...paths: [string]) -> string {
+      let result = ""
+      for path in paths {
+        if result.length > 0 && !result.endsWith("/") {
+          result = result + "/"
+        }
+        result = result + path
+      }
+      return result
+    },
+    dirname: fn(p: string) -> string {
+      let idx = p.lastIndexOf("/")
+      if idx >= 0 {
+        return p.substring(0, idx)
+      }
+      return "."
+    },
+    basename: fn(p: string, ext: string | nil) -> string {
+      let idx = p.lastIndexOf("/")
+      let name = p
+      if idx >= 0 {
+        name = p.substring(idx + 1)
+      }
+      if ext != nil && name.endsWith(ext) {
+        name = name.substring(0, name.length - ext.length)
+      }
+      return name
+    },
+    extname: fn(p: string) -> string {
+      let idx = p.lastIndexOf(".")
+      if idx >= 0 {
+        return p.substring(idx)
+      }
+      return ""
+    },
+  }
+}
