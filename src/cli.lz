@@ -1,0 +1,257 @@
+// Luazi CLI
+// Command-line interface for the Luazi compiler and runtime
+
+import { parse } from "./core/parser"
+import { emit } from "./core/emitter"
+import { typeCheck } from "./core/typechecker"
+import { VM } from "./core/vm"
+
+pub fn main(args: [string]) {
+  if args.length == 0 {
+    println("Luazi v0.1.0")
+    println("Usage: luazi <command> [options]")
+    println("")
+    println("Commands:")
+    println("  run <file>       Compile and run a Luazi source file")
+    println("  compile <file>   Compile a Luazi source file to bytecode")
+    println("  check <file>     Type-check a Luazi source file")
+    println("  repl             Start interactive REPL")
+    println("  init [name]      Initialize a new Luazi project")
+    println("  help             Show this help message")
+    return
+  }
+
+  let command = args[0]
+  let rest = args[1..]
+
+  match command {
+    "run" => runCommand(rest)
+    "compile" => compileCommand(rest)
+    "check" => checkCommand(rest)
+    "repl" => replCommand(rest)
+    "init" => initCommand(rest)
+    "help" => helpCommand()
+    _ => {
+      println("Unknown command: " + command)
+      println("Run 'luazi help' for usage information")
+    }
+  }
+}
+
+fn runCommand(args: [string]) {
+  if args.length == 0 {
+    println("Error: No file specified")
+    println("Usage: luazi run <file>")
+    return
+  }
+
+  let file = args[0]
+  let source = readFile(file)
+
+  // Parse
+  let ast = parse(source, file)
+
+  // Type check
+  let errors = typeCheck(ast, false)
+  if errors.length > 0 {
+    println("Type errors:")
+    for error in errors {
+      println("  " + error.span.source + ":" + error.span.line + ":" + error.span.column + " " + error.message)
+    }
+  }
+
+  // Compile
+  let bytecode = emit(ast)
+
+  // Execute
+  let vm = VM.new(nil)
+  let result = vm.execute(bytecode)
+
+  println("Exit code: " + result.value)
+}
+
+fn compileCommand(args: [string]) {
+  if args.length == 0 {
+    println("Error: No file specified")
+    println("Usage: luazi compile <file> [options]")
+    return
+  }
+
+  let file = args[0]
+  let source = readFile(file)
+  let ast = parse(source, file)
+
+  let errors = typeCheck(ast, false)
+  if errors.length > 0 {
+    println("Type errors:")
+    for error in errors {
+      println("  " + error.span.source + ":" + error.span.line + ":" + error.span.column + " " + error.message)
+    }
+  }
+
+  let bytecode = emit(ast)
+  let outputFile = file.replace(".lz", ".lzc")
+  writeFile(outputFile, bytecode)
+  println("Compiled to " + outputFile)
+}
+
+fn checkCommand(args: [string]) {
+  if args.length == 0 {
+    println("Error: No file specified")
+    println("Usage: luazi check <file>")
+    return
+  }
+
+  let file = args[0]
+  let source = readFile(file)
+  let ast = parse(source, file)
+  let errors = typeCheck(ast, false)
+
+  if errors.length == 0 {
+    println("No type errors found")
+  } else {
+    println("Found " + errors.length + " type error(s):")
+    for error in errors {
+      println("  " + error.span.source + ":" + error.span.line + ":" + error.span.column + " " + error.message)
+    }
+  }
+}
+
+fn replCommand(args: [string]) {
+  println("Luazi REPL v0.1.0")
+  println("Type 'exit' to quit")
+  println("")
+
+  let vm = VM.new(nil)
+  let buffer = ""
+  let multiline = false
+
+  while true {
+    if multiline {
+      print("... ")
+    } else {
+      print("luazi> ")
+    }
+
+    let line = readLine()
+    if line == "exit" {
+      println("Goodbye!")
+      break
+    }
+
+    if line == "help" {
+      println("Commands:")
+      println("  help    Show this help")
+      println("  clear   Clear the buffer")
+      println("  exit    Exit the REPL")
+      continue
+    }
+
+    if line == "clear" {
+      buffer = ""
+      multiline = false
+      continue
+    }
+
+    if multiline {
+      buffer = buffer + "\n" + line
+      if line.trim().endsWith("}") || line.trim().endsWith("]") || line.trim().endsWith(")") {
+        multiline = false
+      } else {
+        continue
+      }
+    } else {
+      buffer = line
+      if line.trim().endsWith("{") || line.trim().endsWith("[") || line.trim().endsWith("(") {
+        multiline = true
+        continue
+      }
+    }
+
+    try {
+      let source = buffer
+      let ast = parse(source, "<repl>")
+      let errors = typeCheck(ast, false)
+      if errors.length > 0 {
+        for error in errors {
+          println("Type error: " + error.message)
+        }
+        buffer = ""
+        continue
+      }
+      let bytecode = emit(ast)
+      let result = vm.execute(bytecode)
+      println(result.value)
+    } catch e {
+      println("Error: " + e.message)
+    }
+
+    buffer = ""
+  }
+}
+
+fn initCommand(args: [string]) {
+  let name = "my-luazi-project"
+  if args.length > 0 {
+    name = args[0]
+  }
+
+  mkdir(name)
+  mkdir(name + "/src")
+  mkdir(name + "/tests")
+
+  let mainContent = "// Main entry point for " + name + "\nfn main() {\n  println("Hello, Luazi!")\n}\n"
+  writeFile(name + "/src/main.lz", mainContent)
+
+  let readmeContent = "# " + name + "\n\nA Luazi project.\n\n## Getting Started\n\n```bash\nluazi run src/main.lz\n```\n\n## Building\n\n```bash\nluazi compile src/main.lz -o dist/main.lzc\n```\n\n## Testing\n\n```bash\nluazi test\n```\n"
+  writeFile(name + "/README.md", readmeContent)
+
+  let gitignore = "node_modules/\ndist/\n*.lzc\n*.wasm\n"
+  writeFile(name + "/.gitignore", gitignore)
+
+  println("Created new Luazi project: " + name)
+  println("")
+  println("Next steps:")
+  println("  cd " + name)
+  println("  luazi run src/main.lz")
+}
+
+fn helpCommand() {
+  println("Luazi v0.1.0")
+  println("Usage: luazi <command> [options]")
+  println("")
+  println("Commands:")
+  println("  run <file>       Compile and run a Luazi source file")
+  println("  compile <file>   Compile a Luazi source file to bytecode")
+  println("  check <file>     Type-check a Luazi source file")
+  println("  repl             Start interactive REPL")
+  println("  init [name]      Initialize a new Luazi project")
+  println("  help             Show this help message")
+}
+
+// Built-in file operations (would be provided by the runtime)
+fn readFile(path: string) -> string {
+  // Placeholder - would be implemented by the runtime
+  return ""
+}
+
+fn writeFile(path: string, data: [number]) {
+  // Placeholder - would be implemented by the runtime
+}
+
+fn mkdir(path: string) {
+  // Placeholder - would be implemented by the runtime
+}
+
+fn readLine() -> string {
+  // Placeholder - would be implemented by the runtime
+  return ""
+}
+
+fn print(msg: string) {
+  // Placeholder - would be implemented by the runtime
+}
+
+fn println(msg: string) {
+  // Placeholder - would be implemented by the runtime
+}
