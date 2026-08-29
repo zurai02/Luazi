@@ -1,157 +1,820 @@
-// typechecker.lz - Luazi Type System & Inference
-import core
-import ast
+// Luazi Type Checker
+// Hindley-Milner type inference with gradual typing
 
-struct TypeError { msg: string; span: Span }
-fn TypeError.new(msg: string, span: Span) -> TypeError { return TypeError { msg: msg, span: span } }
+import * as AST from "./ast"
+import * as Types from "./types"
 
-enum Type {
-  Int { bits: int; signed: bool }
-  Float { bits: int }
-  Bool; String; Char; Nil; Never
-  Array { elem: ref Type; size: int }
-  Slice { elem: ref Type }
-  Tuple { elems: Vec<ref Type> }
-  Map { key: ref Type; value: ref Type }
-  Fn { params: Vec<ref Type>; ret: ref Type; is_async: bool }
-  Struct { name: string; fields: Vec<(string, ref Type)>; generics: Vec<ref Type> }
-  Enum { name: string; variants: Vec<(string, Vec<ref Type>)>; generics: Vec<ref Type> }
-  Trait { name: string; methods: Vec<(string, ref Type)> }
-  Ref { inner: ref Type; is_mut: bool }
-  Ptr { inner: ref Type; is_mut: bool }
-  Var { id: int }
-  Generic { name: string; bounds: Vec<ref Type> }
-  SelfType
-  Option { inner: ref Type }
-  Result { ok: ref Type; err: ref Type }
+pub type TypeError = {
+  message: string,
+  span: AST.Span,
 }
 
-struct TypeEnv {
-  parent: ref TypeEnv
-  bindings: Map<string, ref Type>
-  types: Map<string, ref Type>
-  traits: Map<string, ref Type>
-  impls: Vec<(ref Type, ref Type)>
+pub type TypeVariable = {
+  kind: string,
+  id: number,
+  instance: Types.Type | nil,
 }
 
-fn TypeEnv.new() -> TypeEnv { return TypeEnv { parent: nil, bindings: Map.new<string, ref Type>(), types: Map.new<string, ref Type>(), traits: Map.new<string, ref Type>(), impls: Vec.new<(ref Type, ref Type)>() } }
-fn TypeEnv.child(parent: ref TypeEnv) -> TypeEnv { return TypeEnv { parent: parent, bindings: Map.new<string, ref Type>(), types: Map.new<string, ref Type>(), traits: Map.new<string, ref Type>(), impls: Vec.new<(ref Type, ref Type)>() } }
+pub type Scheme = {
+  vars: [TypeVariable],
+  type: Types.Type,
+}
 
-fn TypeEnv.lookup(self: ref TypeEnv, name: string) -> ref Type { if self.bindings.contains_key(name) { return self.bindings.get(name) } if self.parent != nil { return self.parent.lookup(name) } return nil }
-fn TypeEnv.lookup_type(self: ref TypeEnv, name: string) -> ref Type { if self.types.contains_key(name) { return self.types.get(name) } if self.parent != nil { return self.parent.lookup_type(name) } return nil }
-fn TypeEnv.define(self: ref mut TypeEnv, name: string, type: ref Type) { self.bindings.insert(name, type) }
-fn TypeEnv.define_type(self: ref mut TypeEnv, name: string, type: ref Type) { self.types.insert(name, type) }
-fn TypeEnv.define_trait(self: ref mut TypeEnv, name: string, type: ref Type) { self.traits.insert(name, type) }
+pub struct TypeEnv {
+  map: {string: Scheme},
+  parent: TypeEnv | nil,
+}
 
-fn TypeEnv.types_equal(self: ref TypeEnv, a: ref Type, b: ref Type) -> bool {
-  match (a, b) {
-    (Type.Int { bits: b1, signed: s1 }, Type.Int { bits: b2, signed: s2 }) => b1 == b2 and s1 == s2,
-    (Type.Float { bits: b1 }, Type.Float { bits: b2 }) => b1 == b2,
-    (Type.Bool, Type.Bool) => true, (Type.String, Type.String) => true, (Type.Char, Type.Char) => true, (Type.Nil, Type.Nil) => true, (Type.Never, Type.Never) => true,
-    (Type.Array { elem: e1, size: s1 }, Type.Array { elem: e2, size: s2 }) => s1 == s2 and self.types_equal(e1, e2),
-    (Type.Slice { elem: e1 }, Type.Slice { elem: e2 }) => self.types_equal(e1, e2),
-    (Type.Tuple { elems: e1 }, Type.Tuple { elems: e2 }) => { if e1.len() != e2.len() { return false } for i in 0..e1.len() { if !self.types_equal(e1[i], e2[i]) { return false } } return true },
-    (Type.Map { key: k1, value: v1 }, Type.Map { key: k2, value: v2 }) => self.types_equal(k1, k2) and self.types_equal(v1, v2),
-    (Type.Fn { params: p1, ret: r1, is_async: a1 }, Type.Fn { params: p2, ret: r2, is_async: a2 }) => { if a1 != a2 or p1.len() != p2.len() { return false } for i in 0..p1.len() { if !self.types_equal(p1[i], p2[i]) { return false } } self.types_equal(r1, r2) },
-    (Type.Ref { inner: i1, is_mut: m1 }, Type.Ref { inner: i2, is_mut: m2 }) => m1 == m2 and self.types_equal(i1, i2),
-    (Type.Ptr { inner: i1, is_mut: m1 }, Type.Ptr { inner: i2, is_mut: m2 }) => m1 == m2 and self.types_equal(i1, i2),
-    (Type.Var { id: id1 }, Type.Var { id: id2 }) => id1 == id2,
-    (Type.Generic { name: n1 }, Type.Generic { name: n2 }) => n1 == n2,
-    (Type.SelfType, Type.SelfType) => true,
-    (Type.Option { inner: i1 }, Type.Option { inner: i2 }) => self.types_equal(i1, i2),
-    (Type.Result { ok: o1, err: e1 }, Type.Result { ok: o2, err: e2 }) => self.types_equal(o1, o2) and self.types_equal(e1, e2),
-    _ => false
+impl TypeEnv {
+  pub fn new(parent: TypeEnv | nil) -> Self {
+    return Self { map: {}, parent: parent }
+  }
+
+  pub fn get(self, name: string) -> Scheme | nil {
+    let result = self.map[name]
+    if result != nil {
+      return result
+    }
+    if self.parent != nil {
+      return self.parent.get(name)
+    }
+    return nil
+  }
+
+  pub fn set(self, name: string, scheme: Scheme) {
+    self.map[name] = scheme
+  }
+
+  pub fn child(self) -> TypeEnv {
+    return TypeEnv.new(self)
   }
 }
 
-struct TypeChecker { env: ref TypeEnv; var_counter: int; errors: Vec<TypeError>; current_fn_return: ref Type; in_loop: bool; in_async: bool }
-
-fn TypeChecker.new() -> TypeChecker {
-  let env = alloc(TypeEnv.new())
-  env.define_type("int", alloc(Type.Int { bits: 64, signed: true }))
-  env.define_type("i8", alloc(Type.Int { bits: 8, signed: true }))
-  env.define_type("i16", alloc(Type.Int { bits: 16, signed: true }))
-  env.define_type("i32", alloc(Type.Int { bits: 32, signed: true }))
-  env.define_type("i64", alloc(Type.Int { bits: 64, signed: true }))
-  env.define_type("uint", alloc(Type.Int { bits: 64, signed: false }))
-  env.define_type("u8", alloc(Type.Int { bits: 8, signed: false }))
-  env.define_type("u16", alloc(Type.Int { bits: 16, signed: false }))
-  env.define_type("u32", alloc(Type.Int { bits: 32, signed: false }))
-  env.define_type("u64", alloc(Type.Int { bits: 64, signed: false }))
-  env.define_type("f32", alloc(Type.Float { bits: 32 }))
-  env.define_type("f64", alloc(Type.Float { bits: 64 }))
-  env.define_type("bool", alloc(Type.Bool))
-  env.define_type("string", alloc(Type.String))
-  env.define_type("char", alloc(Type.Char))
-  env.define_type("nil", alloc(Type.Nil))
-  env.define_type("never", alloc(Type.Never))
-  return TypeChecker { env: env, var_counter: 0, errors: Vec.new<TypeError>(), current_fn_return: alloc(Type.Nil), in_loop: false, in_async: false }
+pub struct TypeChecker {
+  env: TypeEnv,
+  errors: [TypeError],
+  varCounter: number,
+  strictMode: bool,
 }
 
-fn TypeChecker.fresh_var(self: ref mut TypeChecker) -> ref Type { self.var_counter = self.var_counter + 1; return alloc(Type.Var { id: self.var_counter }) }
-fn TypeChecker.error(self: ref mut TypeChecker, msg: string, span: Span) { self.errors.push(TypeError.new(msg, span)) }
+impl TypeChecker {
+  pub fn new(strict: bool) -> Self {
+    let checker = Self {
+      env: TypeEnv.new(nil),
+      errors: [],
+      varCounter: 0,
+      strictMode: strict,
+    }
+    checker.initBuiltins()
+    return checker
+  }
 
-pub fn TypeChecker.check_program(self: ref mut TypeChecker, program: Program) -> bool { for stmt in program.stmts { self.check_stmt(stmt) } return self.errors.len() == 0 }
+  fn initBuiltins(self) {
+    self.env.set("print", { vars: [], type: Types.tFunction([{ name: "args", type: Types.tAny, isOptional: false, isRest: true }], Types.tNil) })
+    self.env.set("println", { vars: [], type: Types.tFunction([{ name: "args", type: Types.tAny, isOptional: false, isRest: true }], Types.tNil) })
+    self.env.set("type_of", { vars: [], type: Types.tFunction([{ name: "value", type: Types.tAny, isOptional: false, isRest: false }], Types.tString) })
+    self.env.set("assert", { vars: [], type: Types.tFunction([
+      { name: "condition", type: Types.tBool, isOptional: false, isRest: false },
+      { name: "message", type: Types.tString, isOptional: true, isRest: false }
+    ], Types.tNil) })
+    self.env.set("panic", { vars: [], type: Types.tFunction([{ name: "message", type: Types.tString, isOptional: true, isRest: false }], { kind: Types.TypeKind.Never }) })
+    self.env.set("len", { vars: [self.freshVar()], type: Types.tFunction([{ name: "collection", type: Types.tAny, isOptional: false, isRest: false }], Types.tNumber) })
+    self.env.set("clone", { vars: [self.freshVar()], type: Types.tFunction([{ name: "value", type: Types.tAny, isOptional: false, isRest: false }], Types.tAny) })
+    self.env.set("math", { vars: [], type: Types.tNamed("math") })
+  }
 
-fn TypeChecker.check_stmt(self: ref mut TypeChecker, stmt: ref Stmt) -> ref Type {
-  match stmt {
-    Stmt.ExprStmt { expr: e } => self.check_expr(e),
-    Stmt.VarDecl { name: n, type_expr: te, init: i, is_const: c, is_mut: m } => {
-      let mut expected = self.fresh_var(); if te is not TypeExpr.Infer { expected = self.type_from_expr(te) }
-      let actual = self.check_expr(i); if !self.unify(expected, actual) { self.error("Type mismatch: expected " + self.type_to_string(expected) + ", got " + self.type_to_string(actual), stmt.span) }
-      self.env.define(n, actual); return alloc(Type.Nil)
+  pub fn check(self, program: AST.Program) -> [TypeError] {
+    for stmt in program.body {
+      self.inferStatement(stmt)
     }
-    Stmt.FnDecl { name: n, params: p, return_type: rt, body: b, generics: g } => self.check_fn_decl(n, p, rt, b, g, stmt.span),
-    Stmt.StructDecl { name: n, fields: f, generics: g } => {
-      let mut ft = Vec.new<(string, ref Type)>(); for field in f { ft.push((field.name, self.type_from_expr(field.type_expr))) }
-      let mut gt = Vec.new<ref Type>(); for gen in g { gt.push(alloc(Type.Generic { name: gen.name, bounds: Vec.new<ref Type>() })) }
-      self.env.define_type(n, alloc(Type.Struct { name: n, fields: ft, generics: gt })); return alloc(Type.Nil)
+    return self.errors
+  }
+
+  fn inferStatement(self, stmt: AST.Statement) {
+    match stmt.kind {
+      "VarDecl" => self.inferVarDecl(stmt)
+      "FnDecl" => self.inferFnDecl(stmt)
+      "If" => self.inferIf(stmt)
+      "While" => self.inferWhile(stmt)
+      "For" => self.inferFor(stmt)
+      "ForIn" => self.inferForIn(stmt)
+      "Match" => self.inferMatch(stmt)
+      "Return" => self.inferReturn(stmt)
+      "Break" => {}
+      "Continue" => {}
+      "ExprStmt" => self.inferExpression(stmt.expression)
+      "Block" => self.inferBlock(stmt)
+      "StructDecl" => self.inferStructDecl(stmt)
+      "EnumDecl" => self.inferEnumDecl(stmt)
+      "TraitDecl" => self.inferTraitDecl(stmt)
+      "ImplDecl" => self.inferImplDecl(stmt)
+      "Import" => {}
+      "Export" => self.inferStatement(stmt.declaration)
+      "Defer" => self.inferExpression(stmt.expression)
+      "Guard" => self.inferGuard(stmt)
+      "TypeAlias" => {}
     }
-    Stmt.EnumDecl { name: n, variants: v, generics: g } => {
-      let mut vt = Vec.new<(string, Vec<ref Type>)>(); for variant in v { let mut ft = Vec.new<ref Type>(); for field in variant.fields { ft.push(self.type_from_expr(field.type_expr)) } vt.push((variant.name, ft)) }
-      let mut gt = Vec.new<ref Type>(); for gen in g { gt.push(alloc(Type.Generic { name: gen.name, bounds: Vec.new<ref Type>() })) }
-      self.env.define_type(n, alloc(Type.Enum { name: n, variants: vt, generics: gt })); return alloc(Type.Nil)
+  }
+
+  fn inferVarDecl(self, decl: AST.VarDecl) {
+    let initType: Types.Type
+    if decl.initializer != nil {
+      initType = self.inferExpression(decl.initializer)
+    } else {
+      initType = Types.tNil
     }
-    Stmt.TraitDecl { name: n, methods: m } => {
-      let mut mt = Vec.new<(string, ref Type)>(); for method in m { let mut pt = Vec.new<ref Type>(); for param in method.params { pt.push(self.type_from_expr(param.type_expr)) } let rt = self.type_from_expr(method.return_type); mt.push((method.name, alloc(Type.Fn { params: pt, ret: rt, is_async: method.is_async }))) }
-      self.env.define_trait(n, alloc(Type.Trait { name: n, methods: mt })); return alloc(Type.Nil)
+
+    if decl.typeAnnotation != nil {
+      let annotatedType = self.typeFromExpr(decl.typeAnnotation)
+      if !self.unify(initType, annotatedType) {
+        self.error("Type mismatch: expected " + Types.typeToString(annotatedType) + ", got " + Types.typeToString(initType), decl.span)
+      }
+      initType = annotatedType
     }
-    Stmt.ImplDecl { methods: m } => { for method in m { self.check_stmt(method) } return alloc(Type.Nil) }
-    Stmt.Import { } => alloc(Type.Nil),
-    Stmt.TypeDecl { name: n, type_expr: te } => { self.env.define_type(n, self.type_from_expr(te)); return alloc(Type.Nil) }
-    Stmt.ModuleDecl { stmts: s } => { let old = self.env; self.env = alloc(TypeEnv.child(old)); for st in s { self.check_stmt(st) } self.env = old; return alloc(Type.Nil) }
-    Stmt.UseDecl { } => alloc(Type.Nil)
+
+    self.env.set(decl.name, { vars: self.freeVars(initType), type: initType })
+  }
+
+  fn inferFnDecl(self, decl: AST.FnDecl) {
+    let paramTypes: [Types.FunctionParam] = []
+    for p in decl.params {
+      let pType = Types.tAny
+      if p.type != nil {
+        pType = self.typeFromExpr(p.type)
+      }
+      paramTypes.push({ name: p.name, type: pType, isOptional: p.defaultValue != nil, isRest: false })
+    }
+
+    let returnType = Types.tAny
+    if decl.returnType != nil {
+      returnType = self.typeFromExpr(decl.returnType)
+    }
+
+    let fnType = Types.tFunction(paramTypes, returnType, decl.isAsync)
+    self.env.set(decl.name, { vars: [], type: fnType })
+
+    let bodyEnv = self.env.child()
+    for param in decl.params {
+      let pType = Types.tAny
+      if param.type != nil {
+        pType = self.typeFromExpr(param.type)
+      }
+      bodyEnv.set(param.name, { vars: [], type: pType })
+    }
+
+    let oldEnv = self.env
+    self.env = bodyEnv
+    self.inferBlock(decl.body)
+    self.env = oldEnv
+  }
+
+  fn inferIf(self, stmt: AST.IfStmt) {
+    let condType = self.inferExpression(stmt.condition)
+    if !self.isBoolLike(condType) && self.strictMode {
+      self.error("Condition must be boolean, got " + Types.typeToString(condType), stmt.condition.span)
+    }
+    self.inferBlock(stmt.thenBranch)
+    if stmt.elseBranch != nil {
+      if stmt.elseBranch.kind == "If" {
+        self.inferIf(stmt.elseBranch)
+      } else {
+        self.inferBlock(stmt.elseBranch)
+      }
+    }
+  }
+
+  fn inferWhile(self, stmt: AST.WhileStmt) {
+    let condType = self.inferExpression(stmt.condition)
+    if !self.isBoolLike(condType) && self.strictMode {
+      self.error("Condition must be boolean, got " + Types.typeToString(condType), stmt.condition.span)
+    }
+    self.inferBlock(stmt.body)
+  }
+
+  fn inferFor(self, stmt: AST.ForStmt) {
+    let oldEnv = self.env
+    self.env = self.env.child()
+
+    if stmt.init != nil {
+      if stmt.init.kind == "VarDecl" {
+        self.inferVarDecl(stmt.init)
+      } else if stmt.init.kind == "ExprStmt" {
+        self.inferExpression(stmt.init.expression)
+      }
+    }
+
+    if stmt.condition != nil {
+      let condType = self.inferExpression(stmt.condition)
+      if !self.isBoolLike(condType) && self.strictMode {
+        self.error("For condition must be boolean", stmt.condition.span)
+      }
+    }
+
+    if stmt.increment != nil {
+      self.inferExpression(stmt.increment)
+    }
+
+    self.inferBlock(stmt.body)
+    self.env = oldEnv
+  }
+
+  fn inferForIn(self, stmt: AST.ForInStmt) {
+    let iterType = self.inferExpression(stmt.iterable)
+    let elemType = self.getElementType(iterType)
+
+    let oldEnv = self.env
+    self.env = self.env.child()
+    self.env.set(stmt.varName, { vars: [], type: elemType })
+    self.inferBlock(stmt.body)
+    self.env = oldEnv
+  }
+
+  fn inferMatch(self, stmt: AST.MatchStmt) {
+    let exprType = self.inferExpression(stmt.expression)
+    for arm in stmt.arms {
+      let patternType = self.inferPattern(arm.pattern)
+      if !self.unify(patternType, exprType) {
+        self.error("Pattern type " + Types.typeToString(patternType) + " does not match " + Types.typeToString(exprType), arm.pattern.span)
+      }
+      if arm.guard != nil {
+        let guardType = self.inferExpression(arm.guard)
+        if !self.isBoolLike(guardType) && self.strictMode {
+          self.error("Guard must be boolean", arm.guard.span)
+        }
+      }
+      if arm.body.kind == "Block" {
+        self.inferBlock(arm.body)
+      } else {
+        self.inferExpression(arm.body)
+      }
+    }
+  }
+
+  fn inferReturn(self, stmt: AST.ReturnStmt) -> Types.Type {
+    if stmt.value != nil {
+      return self.inferExpression(stmt.value)
+    }
+    return Types.tNil
+  }
+
+  fn inferBlock(self, block: AST.Block) {
+    let oldEnv = self.env
+    self.env = self.env.child()
+    for stmt in block.statements {
+      self.inferStatement(stmt)
+    }
+    self.env = oldEnv
+  }
+
+  fn inferStructDecl(self, decl: AST.StructDecl) {
+    let fieldTypes: {string: Types.Type} = {}
+    for field in decl.fields {
+      let ftype = Types.tAny
+      if field.type != nil {
+        ftype = self.typeFromExpr(field.type)
+      }
+      fieldTypes[field.name] = ftype
+    }
+    let structType: Types.StructType = {
+      kind: Types.TypeKind.Struct,
+      name: decl.name,
+      fields: fieldTypes,
+      methods: {},
+    }
+    self.env.set(decl.name, { vars: [], type: structType })
+  }
+
+  fn inferEnumDecl(self, decl: AST.EnumDecl) {
+    let variants: [Types.EnumVariant] = []
+    for v in decl.variants {
+      let fields: [Types.Type] = []
+      for f in v.fields {
+        let ftype = Types.tAny
+        if f.type != nil {
+          ftype = self.typeFromExpr(f.type)
+        }
+        fields.push(ftype)
+      }
+      variants.push({ name: v.name, fields: fields })
+    }
+    let enumType: Types.EnumType = {
+      kind: Types.TypeKind.Enum,
+      name: decl.name,
+      variants: variants,
+    }
+    self.env.set(decl.name, { vars: [], type: enumType })
+  }
+
+  fn inferTraitDecl(self, decl: AST.TraitDecl) {
+    let methods: {string: Types.FunctionType} = {}
+    for method in decl.methods {
+      let params: [Types.FunctionParam] = []
+      for p in method.params {
+        let pType = Types.tAny
+        if p.type != nil {
+          pType = self.typeFromExpr(p.type)
+        }
+        params.push({ name: p.name, type: pType, isOptional: p.defaultValue != nil, isRest: false })
+      }
+      let ret = Types.tAny
+      if method.returnType != nil {
+        ret = self.typeFromExpr(method.returnType)
+      }
+      methods[method.name] = Types.tFunction(params, ret) as Types.FunctionType
+    }
+    let traitType: Types.TraitType = {
+      kind: Types.TypeKind.Trait,
+      name: decl.name,
+      methods: methods,
+    }
+    self.env.set(decl.name, { vars: [], type: traitType })
+  }
+
+  fn inferImplDecl(self, decl: AST.ImplDecl) {
+    let targetType = self.typeFromExpr(decl.target)
+    if decl.trait != nil {
+      let traitType = self.typeFromExpr(decl.trait)
+    }
+    for method in decl.methods {
+      self.inferFnDecl(method)
+    }
+  }
+
+  fn inferGuard(self, stmt: AST.GuardStmt) {
+    let condType = self.inferExpression(stmt.condition)
+    if !self.isBoolLike(condType) && self.strictMode {
+      self.error("Guard condition must be boolean", stmt.condition.span)
+    }
+    self.inferBlock(stmt.elseBranch)
+  }
+
+  fn inferExpression(self, expr: AST.Expression) -> Types.Type {
+    match expr.kind {
+      "Literal" => self.inferLiteral(expr)
+      "Identifier" => self.inferIdentifier(expr)
+      "Binary" => self.inferBinary(expr)
+      "Unary" => self.inferUnary(expr)
+      "Ternary" => self.inferTernary(expr)
+      "Call" => self.inferCall(expr)
+      "Member" => self.inferMember(expr)
+      "Index" => self.inferIndex(expr)
+      "Assignment" => self.inferAssignment(expr)
+      "Lambda" => self.inferLambda(expr)
+      "Array" => self.inferArray(expr)
+      "Table" => self.inferTable(expr)
+      "Tuple" => self.inferTuple(expr)
+      "Range" => Types.tArray(Types.tNumber)
+      "Spread" => self.inferExpression(expr.expression)
+      "Await" => self.inferAwait(expr)
+      "Yield" => self.inferExpression(expr.expression ?? { kind: "Literal", value: nil, raw: "nil", span: expr.span })
+      "Try" => self.inferTry(expr)
+      "TypeCast" => self.typeFromExpr(expr.targetType)
+      "TypeCheck" => Types.tBool
+      "BlockExpr" => Types.tAny
+      _ => Types.tAny
+    }
+  }
+
+  fn inferLiteral(self, expr: AST.Literal) -> Types.Type {
+    if expr.value == nil {
+      return Types.tNil
+    }
+    if expr.value as bool != nil {
+      return Types.tBool
+    }
+    if expr.value as number != nil {
+      return Types.tNumber
+    }
+    if expr.value as string != nil {
+      return Types.tString
+    }
+    return Types.tAny
+  }
+
+  fn inferIdentifier(self, expr: AST.Identifier) -> Types.Type {
+    let scheme = self.env.get(expr.name)
+    if scheme != nil {
+      return self.instantiate(scheme)
+    }
+    if self.strictMode {
+      self.error("Undefined variable: " + expr.name, expr.span)
+    }
+    return Types.tAny
+  }
+
+  fn inferBinary(self, expr: AST.BinaryExpr) -> Types.Type {
+    let leftType = self.inferExpression(expr.left)
+    let rightType = self.inferExpression(expr.right)
+
+    match expr.operator {
+      "+" | "-" | "*" | "/" | "%" | "^" => {
+        if self.isNumber(leftType) && self.isNumber(rightType) {
+          return Types.tNumber
+        }
+        if expr.operator == "+" && (self.isString(leftType) || self.isString(rightType)) {
+          return Types.tString
+        }
+        if self.strictMode {
+          self.error("Operator '" + expr.operator + "' requires numbers, got " + Types.typeToString(leftType) + " and " + Types.typeToString(rightType), expr.span)
+        }
+        return Types.tNumber
+      }
+      "==" | "!=" | "<" | "<=" | ">" | ">=" => {
+        return Types.tBool
+      }
+      "&&" | "||" => {
+        return Types.tBool
+      }
+      "&" | "|" => {
+        if self.isNumber(leftType) && self.isNumber(rightType) {
+          return Types.tNumber
+        }
+        return Types.tNumber
+      }
+      ".." => {
+        return Types.tString
+      }
+      "??" => {
+        if self.unify(leftType, rightType) {
+          return leftType
+        }
+        return Types.tUnion(leftType, rightType)
+      }
+      _ => return Types.tAny
+    }
+  }
+
+  fn inferUnary(self, expr: AST.UnaryExpr) -> Types.Type {
+    let operandType = self.inferExpression(expr.operand)
+    match expr.operator {
+      "-" => {
+        if self.isNumber(operandType) {
+          return Types.tNumber
+        }
+        if self.strictMode {
+          self.error("Unary '-' requires number, got " + Types.typeToString(operandType), expr.span)
+        }
+        return Types.tNumber
+      }
+      "!" | "not" => return Types.tBool
+      "~" => return Types.tNumber
+      "#" => return Types.tNumber
+      "ref" => return { kind: Types.TypeKind.Ref, inner: operandType }
+      "mut" => return { kind: Types.TypeKind.Mut, inner: operandType }
+      _ => return operandType
+    }
+  }
+
+  fn inferTernary(self, expr: AST.TernaryExpr) -> Types.Type {
+    let condType = self.inferExpression(expr.condition)
+    if !self.isBoolLike(condType) && self.strictMode {
+      self.error("Ternary condition must be boolean", expr.condition.span)
+    }
+    let thenType = self.inferExpression(expr.thenExpr)
+    let elseType = self.inferExpression(expr.elseExpr)
+    if self.unify(thenType, elseType) {
+      return thenType
+    }
+    return Types.tUnion(thenType, elseType)
+  }
+
+  fn inferCall(self, expr: AST.CallExpr) -> Types.Type {
+    let calleeType = self.inferExpression(expr.callee)
+    if calleeType.kind == Types.TypeKind.Function {
+      let fn = calleeType as Types.FunctionType
+      let requiredParams = 0
+      for p in fn.params {
+        if !p.isOptional && !p.isRest {
+          requiredParams = requiredParams + 1
+        }
+      }
+      if expr.args.length < requiredParams {
+        self.error("Too few arguments: expected " + fn.params.length + ", got " + expr.args.length, expr.span)
+      }
+      for i in 0..expr.args.length {
+        if i < fn.params.length {
+          let argType = self.inferExpression(expr.args[i].value)
+          if !self.unify(argType, fn.params[i].type) && self.strictMode {
+            self.error("Argument " + (i + 1) + " type mismatch: expected " + Types.typeToString(fn.params[i].type) + ", got " + Types.typeToString(argType), expr.args[i].span)
+          }
+        }
+      }
+      return fn.returnType
+    }
+    if calleeType.kind == Types.TypeKind.Any {
+      return Types.tAny
+    }
+    if self.strictMode {
+      self.error("Cannot call non-function type: " + Types.typeToString(calleeType), expr.span)
+    }
+    return Types.tAny
+  }
+
+  fn inferMember(self, expr: AST.MemberExpr) -> Types.Type {
+    let objType = self.inferExpression(expr.object)
+    if objType.kind == Types.TypeKind.Struct {
+      let struct = objType as Types.StructType
+      let fieldType = struct.fields[expr.property]
+      if fieldType != nil {
+        return fieldType
+      }
+      let methodType = struct.methods[expr.property]
+      if methodType != nil {
+        return methodType
+      }
+    }
+    if objType.kind == Types.TypeKind.Table {
+      let tbl = objType as Types.TableType
+      return tbl.valueType
+    }
+    if objType.kind == Types.TypeKind.String && expr.property == "length" {
+      return Types.tNumber
+    }
+    if objType.kind == Types.TypeKind.Any {
+      return Types.tAny
+    }
+    if self.strictMode {
+      self.error("Property '" + expr.property + "' does not exist on " + Types.typeToString(objType), expr.span)
+    }
+    return Types.tAny
+  }
+
+  fn inferIndex(self, expr: AST.IndexExpr) -> Types.Type {
+    let objType = self.inferExpression(expr.object)
+    let idxType = self.inferExpression(expr.index)
+    if objType.kind == Types.TypeKind.Array {
+      let arr = objType as Types.ArrayType
+      return arr.elementType
+    }
+    if objType.kind == Types.TypeKind.Table {
+      let tbl = objType as Types.TableType
+      return tbl.valueType
+    }
+    if objType.kind == Types.TypeKind.String {
+      return Types.tString
+    }
+    if objType.kind == Types.TypeKind.Any {
+      return Types.tAny
+    }
+    if self.strictMode {
+      self.error("Cannot index " + Types.typeToString(objType), expr.span)
+    }
+    return Types.tAny
+  }
+
+  fn inferAssignment(self, expr: AST.AssignmentExpr) -> Types.Type {
+    let valueType = self.inferExpression(expr.value)
+    if expr.target.kind == "Identifier" {
+      let name = (expr.target as AST.Identifier).name
+      let existing = self.env.get(name)
+      if existing != nil {
+        let existingType = self.instantiate(existing)
+        if !self.unify(valueType, existingType) && self.strictMode {
+          self.error("Cannot assign " + Types.typeToString(valueType) + " to " + Types.typeToString(existingType), expr.span)
+        }
+        return existingType
+      }
+      self.env.set(name, { vars: [], type: valueType })
+      return valueType
+    }
+    return valueType
+  }
+
+  fn inferLambda(self, expr: AST.LambdaExpr) -> Types.Type {
+    let paramTypes: [Types.FunctionParam] = []
+    for p in expr.params {
+      let pType = Types.tAny
+      if p.type != nil {
+        pType = self.typeFromExpr(p.type)
+      }
+      paramTypes.push({ name: p.name, type: pType, isOptional: p.defaultValue != nil, isRest: false })
+    }
+
+    let oldEnv = self.env
+    self.env = self.env.child()
+    for param in expr.params {
+      let pType = Types.tAny
+      if param.type != nil {
+        pType = self.typeFromExpr(param.type)
+      }
+      self.env.set(param.name, { vars: [], type: pType })
+    }
+
+    let returnType: Types.Type
+    if expr.body.kind == "Block" {
+      self.inferBlock(expr.body as AST.Block)
+      returnType = Types.tNil
+    } else {
+      returnType = self.inferExpression(expr.body as AST.Expression)
+    }
+
+    self.env = oldEnv
+    return Types.tFunction(paramTypes, returnType, expr.isAsync)
+  }
+
+  fn inferArray(self, expr: AST.ArrayExpr) -> Types.Type {
+    if expr.elements.length == 0 {
+      return Types.tArray(Types.tAny)
+    }
+    let elemTypes: [Types.Type] = []
+    for e in expr.elements {
+      elemTypes.push(self.inferExpression(e))
+    }
+    let unified = elemTypes[0]
+    for i in 1..elemTypes.length {
+      if !self.unify(unified, elemTypes[i]) {
+        unified = Types.tUnion(unified, elemTypes[i])
+      }
+    }
+    return Types.tArray(unified)
+  }
+
+  fn inferTable(self, expr: AST.TableExpr) -> Types.Type {
+    if expr.entries.length == 0 {
+      return Types.tTable(Types.tAny, Types.tAny)
+    }
+    let keyTypes: [Types.Type] = []
+    let valueTypes: [Types.Type] = []
+    for e in expr.entries {
+      if e.key as string != nil {
+        keyTypes.push(Types.tString)
+      } else {
+        keyTypes.push(self.inferExpression(e.key as AST.Expression))
+      }
+      valueTypes.push(self.inferExpression(e.value))
+    }
+    let unifiedKey = keyTypes[0]
+    for i in 1..keyTypes.length {
+      if !self.unify(unifiedKey, keyTypes[i]) {
+        unifiedKey = Types.tUnion(unifiedKey, keyTypes[i])
+      }
+    }
+    let unifiedValue = valueTypes[0]
+    for i in 1..valueTypes.length {
+      if !self.unify(unifiedValue, valueTypes[i]) {
+        unifiedValue = Types.tUnion(unifiedValue, valueTypes[i])
+      }
+    }
+    return Types.tTable(unifiedKey, unifiedValue)
+  }
+
+  fn inferTuple(self, expr: AST.TupleExpr) -> Types.Type {
+    let types: [Types.Type] = []
+    for e in expr.elements {
+      types.push(self.inferExpression(e))
+    }
+    return { kind: Types.TypeKind.Tuple, elements: types }
+  }
+
+  fn inferAwait(self, expr: AST.AwaitExpr) -> Types.Type {
+    let innerType = self.inferExpression(expr.expression)
+    if innerType.kind == Types.TypeKind.Generic {
+      let gen = innerType as Types.GenericType
+      if gen.args.length > 0 {
+        return gen.args[0]
+      }
+    }
+    return innerType
+  }
+
+  fn inferTry(self, expr: AST.TryExpr) -> Types.Type {
+    let tryType = self.inferExpression(expr.expression)
+    if expr.catchBody != nil {
+      let oldEnv = self.env
+      self.env = self.env.child()
+      if expr.catchVar != nil {
+        self.env.set(expr.catchVar, { vars: [], type: Types.tString })
+      }
+      self.inferBlock(expr.catchBody)
+      self.env = oldEnv
+    }
+    return tryType
+  }
+
+  fn inferPattern(self, pattern: AST.Pattern) -> Types.Type {
+    match pattern.kind {
+      "LiteralPattern" => self.inferLiteral(pattern.value as AST.Literal)
+      "VariablePattern" => self.freshVar()
+      "WildcardPattern" => Types.tAny
+      "ArrayPattern" => Types.tArray(self.freshVar())
+      "StructPattern" => Types.tNamed(pattern.name)
+      "EnumPattern" => Types.tNamed(pattern.enumName)
+      "RestPattern" => Types.tArray(self.freshVar())
+      _ => Types.tAny
+    }
+  }
+
+  fn typeFromExpr(self, expr: AST.TypeExpr) -> Types.Type {
+    match expr.kind {
+      "NamedType" => return Types.tNamed((expr as AST.NamedType).name)
+      "GenericType" => {
+        let gen = expr as AST.GenericType
+        let args: [Types.Type] = []
+        for a in gen.args {
+          args.push(self.typeFromExpr(a))
+        }
+        return Types.tGeneric(gen.name, args)
+      }
+      "FunctionType" => {
+        let fn = expr as AST.FunctionType
+        let params: [Types.FunctionParam] = []
+        for i in 0..fn.params.length {
+          params.push({ name: "arg" + i, type: self.typeFromExpr(fn.params[i]), isOptional: false, isRest: false })
+        }
+        return Types.tFunction(params, self.typeFromExpr(fn.returnType))
+      }
+      "ArrayType" => return Types.tArray(self.typeFromExpr((expr as AST.ArrayType).element))
+      "TableType" => {
+        let tbl = expr as AST.TableType
+        return Types.tTable(self.typeFromExpr(tbl.key), self.typeFromExpr(tbl.value))
+      }
+      "OptionalType" => return Types.tOptional(self.typeFromExpr((expr as AST.OptionalType).inner))
+      "UnionType" => {
+        let un = expr as AST.UnionType
+        let result = self.typeFromExpr(un.types[0])
+        for i in 1..un.types.length {
+          result = Types.tUnion(result, self.typeFromExpr(un.types[i]))
+        }
+        return result
+      }
+      "IntersectionType" => return Types.tAny
+      "RefType" => return { kind: Types.TypeKind.Ref, inner: self.typeFromExpr((expr as AST.RefType).inner) }
+      "MutType" => return { kind: Types.TypeKind.Mut, inner: self.typeFromExpr((expr as AST.MutType).inner) }
+      "SelfType" => return { kind: Types.TypeKind.Self }
+      "WildcardType" => return self.freshVar()
+      "LiteralType" => return self.inferLiteral((expr as AST.LiteralType).value)
+      _ => return Types.tAny
+    }
+  }
+
+  fn unify(self, a: Types.Type, b: Types.Type) -> bool {
+    if a.kind == Types.TypeKind.Any || b.kind == Types.TypeKind.Any {
+      return true
+    }
+    if a.kind == Types.TypeKind.Unknown || b.kind == Types.TypeKind.Unknown {
+      return true
+    }
+    if a.kind == Types.TypeKind.Nil && b.kind == Types.TypeKind.Nil {
+      return true
+    }
+    if a.kind == Types.TypeKind.Bool && b.kind == Types.TypeKind.Bool {
+      return true
+    }
+    if a.kind == Types.TypeKind.Number && b.kind == Types.TypeKind.Number {
+      return true
+    }
+    if a.kind == Types.TypeKind.String && b.kind == Types.TypeKind.String {
+      return true
+    }
+    if a.kind == b.kind {
+      return true
+    }
+    return false
+  }
+
+  fn isBoolLike(self, type: Types.Type) -> bool {
+    return type.kind == Types.TypeKind.Bool || type.kind == Types.TypeKind.Any
+  }
+
+  fn isNumber(self, type: Types.Type) -> bool {
+    return type.kind == Types.TypeKind.Number || type.kind == Types.TypeKind.Any
+  }
+
+  fn isString(self, type: Types.Type) -> bool {
+    return type.kind == Types.TypeKind.String || type.kind == Types.TypeKind.Any
+  }
+
+  fn getElementType(self, type: Types.Type) -> Types.Type {
+    if type.kind == Types.TypeKind.Array {
+      return (type as Types.ArrayType).elementType
+    }
+    if type.kind == Types.TypeKind.String {
+      return Types.tString
+    }
+    if type.kind == Types.TypeKind.Table {
+      return (type as Types.TableType).valueType
+    }
+    return Types.tAny
+  }
+
+  fn freshVar(self) -> Types.Type {
+    self.varCounter = self.varCounter + 1
+    return { kind: Types.TypeKind.Unknown, id: self.varCounter }
+  }
+
+  fn freeVars(self, type: Types.Type) -> [TypeVariable] {
+    return []
+  }
+
+  fn instantiate(self, scheme: Scheme) -> Types.Type {
+    return scheme.type
+  }
+
+  fn error(self, message: string, span: AST.Span) {
+    self.errors.push({ message: message, span: span })
   }
 }
 
-fn TypeChecker.check_fn_decl(self: ref mut TypeChecker, name: string, params: Vec<Param>, return_type_expr: ref TypeExpr, body: ref Expr, generics: Vec<GenericParam>, span: Span) -> ref Type {
-  let old_env = self.env; self.env = alloc(TypeEnv.child(old_env))
-  for gen in generics { self.env.define_type(gen.name, alloc(Type.Generic { name: gen.name, bounds: Vec.new<ref Type>() })) }
-  let mut pt = Vec.new<ref Type>(); for param in params { let ptype = self.type_from_expr(param.type_expr); pt.push(ptype); self.env.define(param.name, ptype) }
-  let ret = self.type_from_expr(return_type_expr); let old_ret = self.current_fn_return; self.current_fn_return = ret
-  let body_type = self.check_expr(body); if !self.unify(ret, body_type) { self.error("Return type mismatch: expected " + self.type_to_string(ret) + ", got " + self.type_to_string(body_type), span) }
-  self.current_fn_return = old_ret; self.env = old_env
-  let fn_type = alloc(Type.Fn { params: pt, ret: ret, is_async: false }); self.env.define(name, fn_type); return fn_type
+pub fn typeCheck(program: AST.Program, strict: bool) -> [TypeError] {
+  return TypeChecker.new(strict).check(program)
 }
-
-fn TypeChecker.check_expr(self: ref mut TypeChecker, expr: ref Expr) -> ref Type {
-  match expr {
-    Expr.NumberLit { } => alloc(Type.Float { bits: 64 }),
-    Expr.StringLit { } => alloc(Type.String),
-    Expr.BoolLit { } => alloc(Type.Bool),
-    Expr.NilLit => alloc(Type.Nil),
-    Expr.Ident { name: n } => { let found = self.env.lookup(n); if found == nil { self.error("Undefined: " + n, expr.span); return self.fresh_var() } return found }
-    Expr.Binary { op: o, left: l, right: r } => { let lt = self.check_expr(l); let rt = self.check_expr(r); return self.check_binary_op(o, lt, rt, expr.span) }
-    Expr.Unary { op: o, operand: opd } => { let ot = self.check_expr(opd); return self.check_unary_op(o, ot, expr.span) }
-    Expr.Assign { target: t, value: v } => { let tt = self.check_expr(t); let vt = self.check_expr(v); self.unify(tt, vt); return tt }
-    Expr.Call { callee: c, args: a } => { let ct = self.check_expr(c); let mut at = Vec.new<ref Type>(); for arg in a { at.push(self.check_expr(arg)) } return self.check_call(ct, at, expr.span) }
-    Expr.Member { object: o, member: m } => { let ot = self.check_expr(o); return self.check_member(ot, m, expr.span) }
-    Expr.Index { object: o, index: i } => { let ot = self.check_expr(o); let it = self.check_expr(i); return self.check_index(ot, it, expr.span) }
-    Expr.ArrayLit { elements: e } => { if e.len() == 0 { return alloc(Type.Slice { elem: self.fresh_var() }) } let ft = self.check_expr(e[0]); for i in 1..e.len() { self.unify(ft, self.check_expr(e[i])) } return alloc(Type.Slice { elem: ft }) }
-    Expr.TupleLit { elements: e } => { let mut et = Vec.new<ref Type>(); for elem in e { et.push(self.check_expr(elem)) } return alloc(Type.Tuple { elems: et }) }
-    Expr.MapLit { entries: e } => { if e.len() == 0 { return alloc(Type.Map { key: self.fresh_var(), value: self.fresh_var() }) } let fk = self.check_expr(e[0]._0); let fv = self.check_expr(e[0]._1); for i in 1..e.len() { self.unify(fk, self.check_expr(e[i]._0)); self.unify(fv, self.check_expr(e[i]._1)) } return alloc(Type.Map { key: fk, value: fv }) }
-    Expr.StructLit { name: n } => { let t = self.env.lookup_type(n); if t == nil { self.error("Unknown struct: " + n, expr.span); return self.fresh_var() } return t }
-    Expr.Lambda { params: p, return_type: rt, body: b } => { let old = self.env; self.env = alloc(TypeEnv.child(old)); let mut pt = Vec.new<ref Type>(); for param in p { let ptype = self.type_from_expr(param.type_expr); pt.push(ptype); self.env.define(param.name, ptype) } let r = self.type_from_expr(rt); let bt = self.check_expr(b); self.unify(r, bt); self.env = old; return alloc(Type.Fn { params: pt, ret: r, is_async: false }) }
-    Expr.Block { stmts: s, expr: e } => { let old = self.env; self.env = alloc(TypeEnv.child(old)); for st in s { self.check_stmt(st) } let res = self.check_expr(e); self.env = old; return res }
-    Expr.If { cond: c, then_branch: t, else_branch: e } => { let ct = self.check_expr(c); self.unify(ct, alloc(Type.Bool)); let tt = self.check_expr(t); let et = self.check_expr(e); self.unify(tt, et); return tt }
-    Expr.While { cond: c, body: b } => { let old = self.in_loop; self.in_loop = true; let ct = self.check_expr(c); self.unify(ct, alloc(Type.Bool)); self.check_expr(b); self
