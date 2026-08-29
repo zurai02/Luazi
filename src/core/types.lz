@@ -1,10 +1,10 @@
-// Luazi Type System
-// Core type definitions and operations
+// Luazi 64-bit Type System
+// Core type definitions and operations for 64-bit architecture
 
 pub enum TypeKind {
   Nil,
   Bool,
-  Number,
+  Number,    // Maps to f64 (IEEE 754 double-precision)
   String,
   Table,
   Array,
@@ -32,10 +32,10 @@ pub type BaseType = {
 
 pub type NilType = { kind: TypeKind }
 pub type BoolType = { kind: TypeKind }
-pub type NumberType = { kind: TypeKind }
+pub type NumberType = { kind: TypeKind }      // 64-bit double-precision
 pub type StringType = { kind: TypeKind }
 pub type AnyType = { kind: TypeKind }
-pub type UnknownType = { kind: TypeKind, id: number | nil }
+pub type UnknownType = { kind: TypeKind, id: u64 | nil }
 pub type NeverType = { kind: TypeKind }
 pub type SelfType = { kind: TypeKind }
 
@@ -131,11 +131,11 @@ pub type NamedType = {
 
 pub type Type = NilType | BoolType | NumberType | StringType | TableType | ArrayType | FunctionType | TupleType | StructType | EnumType | TraitType | UnionType | IntersectionType | GenericType | RefType | MutType | OptionalType | SelfType | AnyType | UnknownType | NeverType | NamedType
 
-// Type Constructors
+// Type Constructors (64-bit)
 
 pub const tNil: NilType = { kind: TypeKind.Nil }
 pub const tBool: BoolType = { kind: TypeKind.Bool }
-pub const tNumber: NumberType = { kind: TypeKind.Number }
+pub const tNumber: NumberType = { kind: TypeKind.Number }   // f64
 pub const tString: StringType = { kind: TypeKind.String }
 pub const tAny: AnyType = { kind: TypeKind.Any }
 pub const tUnknown: UnknownType = { kind: TypeKind.Unknown, id: nil }
@@ -199,13 +199,13 @@ pub fn tNamed(name: string) -> NamedType {
   return { kind: TypeKind.Named, name: name }
 }
 
-// Type Operations
+// Type Operations (64-bit)
 
 pub fn typeToString(type: Type) -> string {
   match type.kind {
     TypeKind.Nil => return "nil"
     TypeKind.Bool => return "bool"
-    TypeKind.Number => return "number"
+    TypeKind.Number => return "f64"
     TypeKind.String => return "string"
     TypeKind.Any => return "any"
     TypeKind.Unknown => return "unknown"
@@ -320,7 +320,7 @@ pub fn isSubtype(a: Type, b: Type) -> bool {
       TypeKind.Nil | TypeKind.Bool | TypeKind.Number | TypeKind.String | TypeKind.Any | TypeKind.Never | TypeKind.Self => return true
       TypeKind.Array => return isSubtype((a as ArrayType).elementType, (b as ArrayType).elementType)
       TypeKind.Table => {
-        let ta = a as TableType
+        let ta = type as TableType
         let tb = b as TableType
         return isSubtype(ta.keyType, tb.keyType) && isSubtype(ta.valueType, tb.valueType)
       }
