@@ -1,4 +1,4 @@
-// bootstrap.lz — Luazi 64-bit Self-Hosting Compiler Bootstrap
+// src/bootstrap/bootstrap.lz — Luazi 64-bit Self-Hosting Compiler Bootstrap
 // Main entry point that progressively builds the compiler in Luazi itself.
 //
 // 64-bit Architecture:
@@ -9,29 +9,29 @@
 //   - Numbers: IEEE 754 double-precision (f64)
 //
 // Usage:
-//   luazi bootstrap.lz                    # Run bootstrap
-//   luazi bootstrap.lz --compile <file>   # Compile a .lz file
-//   luazi bootstrap.lz --run <file>       # Run a .lz file
-//   luazi bootstrap.lz --repl             # Start REPL
-//   luazi bootstrap.lz --check <file>     # Type-check only
-//   luazi bootstrap.lz --test             # Run bootstrap tests
+//   luazi src/bootstrap/bootstrap.lz                    # Run bootstrap
+//   luazi src/bootstrap/bootstrap.lz --compile <file>   # Compile a .lz file
+//   luazi src/bootstrap/bootstrap.lz --run <file>       # Run a .lz file
+//   luazi src/bootstrap/bootstrap.lz --repl             # Start REPL
+//   luazi src/bootstrap/bootstrap.lz --check <file>     # Type-check only
+//   luazi src/bootstrap/bootstrap.lz --test             # Run bootstrap tests
 
 // ============================================================================
 // IMPORTS — Self-hosted compiler modules (64-bit)
 // ============================================================================
 
-import { tokenize, Token, TokenType } from "src/core/tokenizer"
-import { parse, Parser, AST } from "src/core/parser"
-import { typeCheck, TypeChecker, TypeError } from "src/core/typechecker"
-import { emit, BytecodeEmitter, OpCode } from "src/core/emitter"
-import { VM, VMValue, run as vmRun } from "src/core/vm"
-import { Span, StringBuilder, is_digit, is_alpha, is_alphanumeric } from "src/core/core"
+import { tokenize, Token, TokenType } from "../core/tokenizer"
+import { parse, Parser, AST } from "../core/parser"
+import { typeCheck, TypeChecker, TypeError } from "../core/typechecker"
+import { emit, BytecodeEmitter, OpCode } from "../core/emitter"
+import { VM, VMValue, run as vmRun } from "../core/vm"
+import { Span, StringBuilder, is_digit, is_alpha, is_alphanumeric } from "../core/core"
 
-import { getStdLib, FsModule, PathModule, CryptoModule, ProcessModule } from "src/stdlib/index"
-import { getFs } from "src/stdlib/fs"
-import { getPath } from "src/stdlib/path"
-import { getCrypto } from "src/stdlib/crypto"
-import { getProcess } from "src/stdlib/process"
+import { getStdLib, FsModule, PathModule, CryptoModule, ProcessModule } from "../stdlib/index"
+import { getFs } from "../stdlib/fs"
+import { getPath } from "../stdlib/path"
+import { getCrypto } from "../stdlib/crypto"
+import { getProcess } from "../stdlib/process"
 
 import {
   print, println, format, assert, panic, type_of, to_string, to_number,
@@ -39,7 +39,7 @@ import {
   flatten, zip, range, repeat, memoize, compose, pipe, curry, partial,
   id, const, flip, apply, bind, timer, benchmark,
   Option, Result, Vec, Map
-} from "src/stdlib/core"
+} from "../stdlib/core"
 
 import {
   Vec2, Vec3, Vec4, Mat4,
@@ -51,7 +51,7 @@ import {
   simd_add, simd_mul, simd_dot, simd_length, simd_normalize,
   smoothstep, smootherstep, bezier,
   perlin_noise, fractal_noise
-} from "src/stdlib/math"
+} from "../stdlib/math"
 
 // ============================================================================
 // 64-BIT BOOTSTRAP CONFIGURATION
@@ -508,7 +508,7 @@ fn test(name: string, f: fn() -> bool) -> TestResult {
 pub fn printUsage() -> nil {
   println("Luazi 64-bit Bootstrap Compiler v0.2.0")
   println("")
-  println("Usage: luazi bootstrap.lz [options] <command> [args...]")
+  println("Usage: luazi src/bootstrap/bootstrap.lz [options] <command> [args...]")
   println("")
   println("Commands:")
   println("  run <file>         Compile and run a Luazi source file")
