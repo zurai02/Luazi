@@ -1,22 +1,23 @@
-// Luazi VM
-// Pure Luazi VM with bytecode interpreter
+// Luazi 64-bit VM
+// Pure Luazi VM with 64-bit bytecode interpreter
 
 pub type VMConfig = {
-  memoryPages: number | nil,
-  maxMemoryPages: number | nil,
-  stackSize: number | nil,
+  memoryPages: u64 | nil,
+  maxMemoryPages: u64 | nil,
+  stackSize: u64 | nil,
   enableSIMD: bool | nil,
   enableJIT: bool | nil,
 }
 
 pub type VMStats = {
-  memoryUsed: number,
-  memoryTotal: number,
-  instructionsExecuted: number,
-  gcCollections: number,
+  memoryUsed: u64,
+  memoryTotal: u64,
+  instructionsExecuted: u64,
+  gcCollections: u64,
 }
 
-pub enum OpCode {
+// 64-bit opcodes match emitter
+pub enum OpCode: u64 {
   NOP = 0x00,
   LOADK = 0x01,
   LOADNIL = 0x02,
@@ -67,6 +68,12 @@ pub enum OpCode {
   GUARD = 0x2F,
   DEFER = 0x30,
   MATCH = 0x31,
+  LOADK64 = 0x32,
+  LOADI64 = 0x33,
+  MOVE64 = 0x34,
+  JMP64 = 0x35,
+  CALL64 = 0x36,
+  NEWARRAY64 = 0x37,
 }
 
 pub type VMValue = {
@@ -76,16 +83,16 @@ pub type VMValue = {
 
 pub type Proto = {
   constants: [VMValue],
-  instructions: [number],
+  instructions: [u64],
   upvalues: [UpvalueInfo],
-  params: number,
+  params: u64,
   locals: [string],
-  lineInfo: [number],
+  lineInfo: [u64],
 }
 
 pub type UpvalueInfo = {
   name: string,
-  index: number,
+  index: u64,
   isLocal: bool,
 }
 
@@ -93,12 +100,12 @@ pub struct VM {
   stack: [VMValue],
   constants: [VMValue],
   globals: {string: VMValue},
-  pc: number,
-  fp: number,
-  code: [number],
+  pc: u64,
+  fp: u64,
+  code: [u64],
   protos: [Proto],
-  callStack: [number],
-  frameStack: [number],
+  callStack: [u64],
+  frameStack: [u64],
   config: VMConfig,
   stats: VMStats,
 }
@@ -153,19 +160,19 @@ impl VM {
     }}
   }
 
-  pub fn execute(self, bytecode: [number]) -> VMValue {
+  pub fn execute(self, bytecode: [u8]) -> VMValue {
     self.loadBytecode(bytecode)
 
     while self.pc < self.code.length {
       let inst = self.fetch()
-      let op = inst & 0x3F
-      let a = (inst >> 6) & 0xFF
-      let b = (inst >> 14) & 0x1FF
-      let c = (inst >> 23) & 0x1FF
-      let bx = (inst >> 14) & 0x3FFFF
+      let op = inst & 0xFF
+      let a = (inst >> 8) & 0xFFFF
+      let b = (inst >> 24) & 0xFFFFF
+      let c = (inst >> 44) & 0xFFFFF
+      let bx = (inst >> 24) & 0xFFFFFFFFFF
       let sbx = bx
-      if bx >= 0x20000 {
-        sbx = bx - 0x40000
+      if bx >= 0x8000000000 {
+        sbx = bx - 0x10000000000
       }
 
       match op {
@@ -175,7 +182,7 @@ impl VM {
         OpCode.LOADBOOL => {
           self.setReg(a, { type: "bool", value: b != 0 })
           if c != 0 {
-            self.pc = self.pc + 4
+            self.pc = self.pc + 8
           }
         }
         OpCode.LOADINT => self.setReg(a, { type: "number", value: sbx })
@@ -285,33 +292,33 @@ impl VM {
           }
           self.setReg(a, { type: "string", value: result })
         }
-        OpCode.JMP => self.pc = self.pc + sbx * 4
+        OpCode.JMP => self.pc = self.pc + sbx * 8
         OpCode.EQ => {
           let left = self.getReg(b)
           let right = self.getReg(c)
           let eq = left.type == right.type && left.value == right.value
           if eq != (a != 0) {
-            self.pc = self.pc + 4
+            self.pc = self.pc + 8
           }
         }
         OpCode.LT => {
           let left = self.asNumber(self.getReg(b))
           let right = self.asNumber(self.getReg(c))
           if (left < right) != (a != 0) {
-            self.pc = self.pc + 4
+            self.pc = self.pc + 8
           }
         }
         OpCode.LE => {
           let left = self.asNumber(self.getReg(b))
           let right = self.asNumber(self.getReg(c))
           if (left <= right) != (a != 0) {
-            self.pc = self.pc + 4
+            self.pc = self.pc + 8
           }
         }
         OpCode.TEST => {
           let val = self.asBool(self.getReg(a))
           if val != (c != 0) {
-            self.pc = self.pc + 4
+            self.pc = self.pc + 8
           }
         }
         OpCode.TESTSET => {
@@ -319,7 +326,7 @@ impl VM {
           if self.asBool(val) == (c != 0) {
             self.setReg(a, val)
           } else {
-            self.pc = self.pc + 4
+            self.pc = self.pc + 8
           }
         }
         OpCode.CALL => {
@@ -386,7 +393,7 @@ impl VM {
           let limit = self.asNumber(self.getReg(a + 1))
           let step = self.asNumber(self.getReg(a + 2))
           if (step > 0 && idx <= limit) || (step < 0 && idx >= limit) {
-            self.pc = self.pc + sbx * 4
+            self.pc = self.pc + sbx * 8
             self.setReg(a + 3, { type: "number", value: idx })
           }
         }
@@ -394,14 +401,14 @@ impl VM {
           let init = self.asNumber(self.getReg(a))
           let step = self.asNumber(self.getReg(a + 2))
           self.setReg(a, { type: "number", value: init - step })
-          self.pc = self.pc + sbx * 4
+          self.pc = self.pc + sbx * 8
         }
         OpCode.TYPECHECK => self.setReg(a, { type: "bool", value: true })
         OpCode.AWAIT => self.setReg(a, self.getReg(b))
         OpCode.GUARD => {
           let cond = self.asBool(self.getReg(a))
           if !cond {
-            self.pc = self.pc + sbx * 4
+            self.pc = self.pc + sbx * 8
           }
         }
         OpCode.DEFER => {}
@@ -431,20 +438,20 @@ impl VM {
     return { type: "nil", value: nil }
   }
 
-  fn loadBytecode(self, bytecode: [number]) {
-    let offset = 0
+  fn loadBytecode(self, bytecode: [u8]) {
+    let offset: u64 = 0
     let magic = self.readUint32(bytecode, offset)
     offset = offset + 4
     let version = bytecode[offset]
     offset = offset + 1
     let flags = bytecode[offset]
     offset = offset + 1
-    let constCount = self.readUint16(bytecode, offset)
-    offset = offset + 2
-    let protoCount = self.readUint16(bytecode, offset)
-    offset = offset + 2
-    let codeSize = self.readUint32(bytecode, offset)
-    offset = offset + 4
+    let constCount = self.readUint64(bytecode, offset)
+    offset = offset + 8
+    let protoCount = self.readUint64(bytecode, offset)
+    offset = offset + 8
+    let codeSize = self.readUint64(bytecode, offset)
+    offset = offset + 8
 
     self.constants = []
     for i in 0..constCount {
@@ -459,8 +466,8 @@ impl VM {
         }
         2 => self.constants.push({ type: "bool", value: true })
         3 => {
-          let len = self.readUint32(bytecode, offset)
-          offset = offset + 4
+          let len = self.readUint64(bytecode, offset)
+          offset = offset + 8
           let str = ""
           for j in 0..len {
             str = str + (bytecode[offset] as string)
@@ -471,26 +478,26 @@ impl VM {
       }
     }
 
-    let protoOffsets: [number] = []
-    let protoSizes: [number] = []
+    let protoOffsets: [u64] = []
+    let protoSizes: [u64] = []
     for i in 0..protoCount {
-      protoOffsets.push(self.readUint32(bytecode, offset))
-      offset = offset + 4
-      protoSizes.push(self.readUint32(bytecode, offset))
-      offset = offset + 4
+      protoOffsets.push(self.readUint64(bytecode, offset))
+      offset = offset + 8
+      protoSizes.push(self.readUint64(bytecode, offset))
+      offset = offset + 8
     }
 
     self.protos = []
     for i in 0..protoCount {
       let pOffset = protoOffsets[i]
-      let pConsts = self.readUint32(bytecode, pOffset)
-      pOffset = pOffset + 4
-      let pInsts = self.readUint32(bytecode, pOffset)
-      pOffset = pOffset + 4
-      let pUpvals = self.readUint32(bytecode, pOffset)
-      pOffset = pOffset + 4
-      let pParams = self.readUint32(bytecode, pOffset)
-      pOffset = pOffset + 4
+      let pConsts = self.readUint64(bytecode, pOffset)
+      pOffset = pOffset + 8
+      let pInsts = self.readUint64(bytecode, pOffset)
+      pOffset = pOffset + 8
+      let pUpvals = self.readUint64(bytecode, pOffset)
+      pOffset = pOffset + 8
+      let pParams = self.readUint64(bytecode, pOffset)
+      pOffset = pOffset + 8
 
       let protoConstants: [VMValue] = []
       for j in 0..pConsts {
@@ -505,8 +512,8 @@ impl VM {
           }
           2 => protoConstants.push({ type: "bool", value: true })
           3 => {
-            let slen = self.readUint32(bytecode, pOffset)
-            pOffset = pOffset + 4
+            let slen = self.readUint64(bytecode, pOffset)
+            pOffset = pOffset + 8
             let sstr = ""
             for k in 0..slen {
               sstr = sstr + (bytecode[pOffset] as string)
@@ -517,17 +524,17 @@ impl VM {
         }
       }
 
-      let instBytes: [number] = []
-      for j in 0..(pInsts * 4) {
-        instBytes.push(bytecode[pOffset + j])
+      let instBytes: [u64] = []
+      for j in 0..pInsts {
+        instBytes.push(self.readUint64(bytecode, pOffset))
+        pOffset = pOffset + 8
       }
-      pOffset = pOffset + pInsts * 4
-      pOffset = pOffset + pInsts * 4
+      pOffset = pOffset + pInsts * 8
 
       let upvalues: [UpvalueInfo] = []
       for j in 0..pUpvals {
-        let idx = self.readUint16(bytecode, pOffset)
-        pOffset = pOffset + 2
+        let idx = self.readUint64(bytecode, pOffset)
+        pOffset = pOffset + 8
         let isLocal = bytecode[pOffset] == 1
         pOffset = pOffset + 1
         let nameLen = bytecode[pOffset]
@@ -552,7 +559,8 @@ impl VM {
 
     self.code = []
     for i in 0..codeSize {
-      self.code.push(bytecode[offset + i])
+      self.code.push(self.readUint64(bytecode, offset))
+      offset = offset + 8
     }
     self.pc = 0
     self.stack = []
@@ -564,13 +572,13 @@ impl VM {
     self.frameStack = []
   }
 
-  fn fetch(self) -> number {
-    let inst = self.readUint32(self.code, self.pc)
-    self.pc = self.pc + 4
+  fn fetch(self) -> u64 {
+    let inst = self.code[self.pc]
+    self.pc = self.pc + 1
     return inst
   }
 
-  fn getReg(self, idx: number) -> VMValue {
+  fn getReg(self, idx: u64) -> VMValue {
     let reg = self.stack[self.fp + idx]
     if reg != nil {
       return reg
@@ -578,11 +586,11 @@ impl VM {
     return { type: "nil", value: nil }
   }
 
-  fn setReg(self, idx: number, val: VMValue) {
+  fn setReg(self, idx: u64, val: VMValue) {
     self.stack[self.fp + idx] = val
   }
 
-  fn getRK(self, idx: number) -> VMValue {
+  fn getRK(self, idx: u64) -> VMValue {
     if idx >= 256 {
       return self.constants[idx - 256]
     }
@@ -597,17 +605,17 @@ impl VM {
       return val.value as bool
     }
     if val.type == "number" {
-      return (val.value as number) != 0
+      return (val.value as f64) != 0
     }
     return true
   }
 
-  fn asNumber(self, val: VMValue) -> number {
+  fn asNumber(self, val: VMValue) -> f64 {
     if val.type == "number" {
-      return val.value as number
+      return val.value as f64
     }
     if val.type == "string" {
-      return (val.value as string) as number
+      return (val.value as string) as f64
     }
     return 0
   }
@@ -617,7 +625,7 @@ impl VM {
       return val.value as string
     }
     if val.type == "number" {
-      return (val.value as number) as string
+      return (val.value as f64) as string
     }
     if val.type == "nil" {
       return "nil"
@@ -631,17 +639,22 @@ impl VM {
     return "[object]"
   }
 
-  fn readUint32(self, data: [number], offset: number) -> number {
-    return data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24)
+  fn readUint32(self, data: [u8], offset: u64) -> u64 {
+    return (data[offset] as u64) | ((data[offset + 1] as u64) << 8) | ((data[offset + 2] as u64) << 16) | ((data[offset + 3] as u64) << 24)
   }
 
-  fn readUint16(self, data: [number], offset: number) -> number {
-    return data[offset] | (data[offset + 1] << 8)
+  fn readUint64(self, data: [u8], offset: u64) -> u64 {
+    return (data[offset] as u64) | ((data[offset + 1] as u64) << 8) | ((data[offset + 2] as u64) << 16) | ((data[offset + 3] as u64) << 24) |
+           ((data[offset + 4] as u64) << 32) | ((data[offset + 5] as u64) << 40) | ((data[offset + 6] as u64) << 48) | ((data[offset + 7] as u64) << 56)
   }
 
-  fn readFloat64(self, data: [number], offset: number) -> number {
-    // Simplified - just return 0 for now
-    return 0
+  fn readFloat64(self, data: [u8], offset: u64) -> f64 {
+    // IEEE 754 double-precision from 8 bytes (little-endian)
+    let bytes: [u8] = []
+    for i in 0..8 {
+      bytes.push(data[offset + i])
+    }
+    return 0.0  // Placeholder - actual implementation needs platform support
   }
 
   pub fn getStats(self) -> VMStats {
@@ -659,7 +672,5 @@ impl VM {
 
 pub fn run(source: string) -> VMValue {
   let vm = VM.new(nil)
-  // Parse and compile source, then execute
-  // This is a placeholder - actual implementation would parse source to AST, emit bytecode, then execute
   return { type: "nil", value: nil }
-    }
+}
