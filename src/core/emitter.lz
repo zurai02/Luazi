@@ -1,0 +1,1009 @@
+// Luazi Bytecode Emitter
+// Converts AST to compact bytecode for VM execution
+
+import * as AST from "./ast"
+
+pub enum OpCode {
+  NOP = 0x00,
+  LOADK = 0x01,
+  LOADNIL = 0x02,
+  LOADBOOL = 0x03,
+  LOADINT = 0x04,
+  MOVE = 0x05,
+  GETGLOBAL = 0x06,
+  SETGLOBAL = 0x07,
+  GETUPVAL = 0x08,
+  SETUPVAL = 0x09,
+  GETTABLE = 0x0A,
+  SETTABLE = 0x0B,
+  NEWTABLE = 0x0C,
+  SELF = 0x0D,
+  ADD = 0x0E,
+  SUB = 0x0F,
+  MUL = 0x10,
+  DIV = 0x11,
+  MOD = 0x12,
+  POW = 0x13,
+  UNM = 0x14,
+  NOT = 0x15,
+  LEN = 0x16,
+  CONCAT = 0x17,
+  JMP = 0x18,
+  EQ = 0x19,
+  LT = 0x1A,
+  LE = 0x1B,
+  TEST = 0x1C,
+  TESTSET = 0x1D,
+  CALL = 0x1E,
+  TAILCALL = 0x1F,
+  RETURN = 0x20,
+  FORLOOP = 0x21,
+  FORPREP = 0x22,
+  TFORLOOP = 0x23,
+  SETLIST = 0x24,
+  CLOSE = 0x25,
+  CLOSURE = 0x26,
+  VARARG = 0x27,
+  TYPECHECK = 0x28,
+  ASSERT = 0x29,
+  ASYNC = 0x2A,
+  AWAIT = 0x2B,
+  SIMD_ADD = 0x2C,
+  SIMD_MUL = 0x2D,
+  SIMD_DOT = 0x2E,
+  GUARD = 0x2F,
+  DEFER = 0x30,
+  MATCH = 0x31,
+}
+
+pub type Constant = {
+  type: string,
+  value: number | string | bool | nil,
+}
+
+pub type FunctionProto = {
+  constants: [Constant],
+  instructions: [number],
+  upvalues: [UpvalueInfo],
+  params: number,
+  locals: [string],
+  lineInfo: [number],
+}
+
+pub type UpvalueInfo = {
+  name: string,
+  index: number,
+  isLocal: bool,
+}
+
+pub type LoopInfo = {
+  start: number,
+  breakPatches: [number],
+  continuePatches: [number],
+}
+
+pub struct BytecodeEmitter {
+  constants: [Constant],
+  instructions: [number],
+  locals: {string: number},
+  localCount: number,
+  freeReg: number,
+  lineInfo: [number],
+  protos: [FunctionProto],
+  upvalues: [UpvalueInfo],
+  loopStack: [LoopInfo],
+  currentLine: number,
+}
+
+impl BytecodeEmitter {
+  pub fn new() -> Self {
+    return Self {
+      constants: [],
+      instructions: [],
+      locals: {},
+      localCount: 0,
+      freeReg: 0,
+      lineInfo: [],
+      protos: [],
+      upvalues: [],
+      loopStack: [],
+      currentLine: 1,
+    }
+  }
+
+  pub fn emit(self, program: AST.Program) -> [number] {
+    for stmt in program.body {
+      self.emitStatement(stmt)
+    }
+    self.emitInstruction(OpCode.RETURN, 0, 1, 0)
+    return self.buildBytecode()
+  }
+
+  fn buildBytecode(self) -> [number] {
+    let headerSize = 12
+    let constSize = 0
+    for c in self.constants {
+      if c.type == "number" {
+        constSize = constSize + 9
+      } else if c.type == "string" {
+        let s = c.value as string
+        constSize = constSize + 5 + s.length
+      } else {
+        constSize = constSize + 1
+      }
+    }
+
+    let protoTableSize = self.protos.length * 8
+    let protoDataSize = 0
+    for proto in self.protos {
+      let pConstSize = 0
+      for c in proto.constants {
+        if c.type == "number" {
+          pConstSize = pConstSize + 9
+        } else if c.type == "string" {
+          let s = c.value as string
+          pConstSize = pConstSize + 5 + s.length
+        } else {
+          pConstSize = pConstSize + 1
+        }
+      }
+      protoDataSize = protoDataSize + pConstSize + proto.instructions.length * 4 + proto.lineInfo.length * 4 + proto.upvalues.length * 4 + 16
+    }
+
+    let codeSize = self.instructions.length * 4
+    let totalSize = headerSize + constSize + protoTableSize + protoDataSize + codeSize
+    let buf: [number] = []
+
+    // Header
+    buf.push(0x4C)
+    buf.push(0x5A)
+    buf.push(0x49)
+    buf.push(0x4D)
+    buf.push(1)
+    buf.push(0)
+    buf.push(self.constants.length & 0xFF)
+    buf.push((self.constants.length >> 8) & 0xFF)
+    buf.push(self.protos.length & 0xFF)
+    buf.push((self.protos.length >> 8) & 0xFF)
+    buf.push(codeSize & 0xFF)
+    buf.push((codeSize >> 8) & 0xFF)
+    buf.push((codeSize >> 16) & 0xFF)
+    buf.push((codeSize >> 24) & 0xFF)
+
+    // Constants
+    for c in self.constants {
+      match c.type {
+        "number" => {
+          buf.push(1)
+          let n = c.value as number
+          let bytes = numberToBytes(n)
+          for b in bytes {
+            buf.push(b)
+          }
+        }
+        "string" => {
+          buf.push(3)
+          let s = c.value as string
+          buf.push(s.length & 0xFF)
+          buf.push((s.length >> 8) & 0xFF)
+          buf.push((s.length >> 16) & 0xFF)
+          buf.push((s.length >> 24) & 0xFF)
+          for ch in s {
+            buf.push(ch as number)
+          }
+        }
+        "bool" => {
+          if c.value as bool {
+            buf.push(2)
+          } else {
+            buf.push(0)
+          }
+        }
+        "nil" => {
+          buf.push(0)
+        }
+      }
+    }
+
+    // Proto table and data
+    let protoDataOffset = buf.length + protoTableSize
+    for proto in self.protos {
+      buf.push(protoDataOffset & 0xFF)
+      buf.push((protoDataOffset >> 8) & 0xFF)
+      buf.push((protoDataOffset >> 16) & 0xFF)
+      buf.push((protoDataOffset >> 24) & 0xFF)
+
+      let pConstSize = 0
+      for c in proto.constants {
+        if c.type == "number" {
+          pConstSize = pConstSize + 9
+        } else if c.type == "string" {
+          let s = c.value as string
+          pConstSize = pConstSize + 5 + s.length
+        } else {
+          pConstSize = pConstSize + 1
+        }
+      }
+      let pSize = pConstSize + proto.instructions.length * 4 + proto.lineInfo.length * 4 + proto.upvalues.length * 4 + 16
+      buf.push(pSize & 0xFF)
+      buf.push((pSize >> 8) & 0xFF)
+      buf.push((pSize >> 16) & 0xFF)
+      buf.push((pSize >> 24) & 0xFF)
+      protoDataOffset = protoDataOffset + pSize
+    }
+
+    // Instructions
+    for inst in self.instructions {
+      buf.push(inst & 0xFF)
+      buf.push((inst >> 8) & 0xFF)
+      buf.push((inst >> 16) & 0xFF)
+      buf.push((inst >> 24) & 0xFF)
+    }
+
+    return buf
+  }
+
+  fn emitStatement(self, stmt: AST.Statement) {
+    match stmt.kind {
+      "VarDecl" => self.emitVarDecl(stmt)
+      "FnDecl" => self.emitFnDecl(stmt)
+      "If" => self.emitIf(stmt)
+      "While" => self.emitWhile(stmt)
+      "For" => self.emitFor(stmt)
+      "ForIn" => self.emitForIn(stmt)
+      "Match" => self.emitMatch(stmt)
+      "Return" => self.emitReturn(stmt)
+      "Break" => self.emitBreak(stmt)
+      "Continue" => self.emitContinue(stmt)
+      "ExprStmt" => self.emitExpression(stmt.expression)
+      "Block" => self.emitBlock(stmt)
+      "StructDecl" => self.emitStructDecl(stmt)
+      "EnumDecl" => self.emitEnumDecl(stmt)
+      "Import" => {}
+      "Export" => self.emitStatement(stmt.declaration)
+      "Defer" => self.emitDefer(stmt)
+      "Guard" => self.emitGuard(stmt)
+      "TypeAlias" => {}
+      _ => panic("Unknown statement kind")
+    }
+  }
+
+  fn emitVarDecl(self, decl: AST.VarDecl) {
+    let reg = self.allocReg()
+    self.locals[decl.name] = reg
+
+    if decl.initializer != nil {
+      self.emitExpression(decl.initializer, reg)
+    } else {
+      self.emitInstruction(OpCode.LOADNIL, reg, 0, 0)
+    }
+  }
+
+  fn emitFnDecl(self, decl: AST.FnDecl) {
+    let proto = self.emitFunctionProto(decl)
+    let protoIdx = self.protos.length - 1
+    let reg = self.allocReg()
+    self.emitABx(OpCode.CLOSURE, reg, protoIdx)
+    self.locals[decl.name] = reg
+  }
+
+  fn emitFunctionProto(self, decl: AST.FnDecl) -> FunctionProto {
+    let oldConstants = self.constants
+    let oldInstructions = self.instructions
+    let oldLocals = self.locals
+    let oldLineInfo = self.lineInfo
+    let oldFreeReg = self.freeReg
+    let oldUpvalues = self.upvalues
+    let oldProtos = self.protos
+
+    self.constants = []
+    self.instructions = []
+    self.locals = {}
+    self.lineInfo = []
+    self.freeReg = 0
+    self.upvalues = []
+    self.protos = []
+
+    for param in decl.params {
+      let reg = self.allocReg()
+      self.locals[param.name] = reg
+    }
+
+    self.emitBlock(decl.body)
+
+    if self.instructions.length == 0 || (self.instructions[self.instructions.length - 1] & 0x3F) != OpCode.RETURN {
+      self.emitInstruction(OpCode.RETURN, 0, 1, 0)
+    }
+
+    let proto: FunctionProto = {
+      constants: self.constants,
+      instructions: self.instructions,
+      upvalues: self.upvalues,
+      params: decl.params.length,
+      locals: [],
+      lineInfo: self.lineInfo,
+    }
+
+    self.constants = oldConstants
+    self.instructions = oldInstructions
+    self.locals = oldLocals
+    self.lineInfo = oldLineInfo
+    self.freeReg = oldFreeReg
+    self.upvalues = oldUpvalues
+    self.protos = oldProtos
+
+    self.protos.push(proto)
+    return proto
+  }
+
+  fn emitIf(self, stmt: AST.IfStmt) {
+    let condReg = self.emitExpression(stmt.condition)
+    let jmpElse = self.instructions.length
+    self.emitInstruction(OpCode.TEST, condReg, 0, 0)
+    self.emitInstruction(OpCode.JMP, 0, 0, 0)
+
+    self.emitBlock(stmt.thenBranch)
+
+    if stmt.elseBranch != nil {
+      let jmpEnd = self.instructions.length
+      self.emitInstruction(OpCode.JMP, 0, 0, 0)
+      let elseStart = self.instructions.length
+      self.patchJump(jmpElse + 1, elseStart - jmpElse - 1)
+
+      if stmt.elseBranch.kind == "If" {
+        self.emitIf(stmt.elseBranch)
+      } else {
+        self.emitBlock(stmt.elseBranch)
+      }
+
+      let endPos = self.instructions.length
+      self.patchJump(jmpEnd, endPos - jmpEnd - 1)
+    } else {
+      let endPos = self.instructions.length
+      self.patchJump(jmpElse + 1, endPos - jmpElse - 1)
+    }
+
+    self.freeReg = condReg
+  }
+
+  fn emitWhile(self, stmt: AST.WhileStmt) {
+    let loopStart = self.instructions.length
+    self.loopStack.push({ start: loopStart, breakPatches: [], continuePatches: [] })
+
+    let condReg = self.emitExpression(stmt.condition)
+    let jmpOut = self.instructions.length
+    self.emitInstruction(OpCode.TEST, condReg, 0, 0)
+    self.emitInstruction(OpCode.JMP, 0, 0, 0)
+
+    self.emitBlock(stmt.body)
+    let backJmp = -(self.instructions.length - loopStart + 1)
+    self.emitABx(OpCode.JMP, 0, backJmp)
+
+    let endPos = self.instructions.length
+    self.patchJump(jmpOut + 1, endPos - jmpOut - 1)
+
+    let loopInfo = self.loopStack.pop()
+    for breakPatch in loopInfo.breakPatches {
+      self.patchJump(breakPatch, endPos - breakPatch - 1)
+    }
+
+    self.freeReg = condReg
+  }
+
+  fn emitFor(self, stmt: AST.ForStmt) {
+    if stmt.init != nil {
+      if stmt.init.kind == "VarDecl" {
+        self.emitVarDecl(stmt.init)
+      } else if stmt.init.kind == "ExprStmt" {
+        self.emitExpression(stmt.init.expression)
+      }
+    }
+
+    let loopStart = self.instructions.length
+    self.loopStack.push({ start: loopStart, breakPatches: [], continuePatches: [] })
+
+    if stmt.condition != nil {
+      let condReg = self.emitExpression(stmt.condition)
+      let jmpOut = self.instructions.length
+      self.emitInstruction(OpCode.TEST, condReg, 0, 0)
+      self.emitInstruction(OpCode.JMP, 0, 0, 0)
+
+      self.emitBlock(stmt.body)
+
+      if stmt.increment != nil {
+        self.emitExpression(stmt.increment)
+      }
+
+      let backJmp = -(self.instructions.length - loopStart + 1)
+      self.emitABx(OpCode.JMP, 0, backJmp)
+
+      let endPos = self.instructions.length
+      self.patchJump(jmpOut + 1, endPos - jmpOut - 1)
+      self.freeReg = condReg
+    } else {
+      self.emitBlock(stmt.body)
+      let backJmp = -(self.instructions.length - loopStart + 1)
+      self.emitABx(OpCode.JMP, 0, backJmp)
+    }
+
+    let loopInfo = self.loopStack.pop()
+    let endPos = self.instructions.length
+    for breakPatch in loopInfo.breakPatches {
+      self.patchJump(breakPatch, endPos - breakPatch - 1)
+    }
+  }
+
+  fn emitForIn(self, stmt: AST.ForInStmt) {
+    let iterReg = self.emitExpression(stmt.iterable)
+    let varReg = self.allocReg()
+    self.locals[stmt.varName] = varReg
+    self.emitInstruction(OpCode.CALL, iterReg, 1, 2)
+    self.emitInstruction(OpCode.MOVE, varReg, iterReg, 0)
+  }
+
+  fn emitMatch(self, stmt: AST.MatchStmt) {
+    let exprReg = self.emitExpression(stmt.expression)
+    let endJumps: [number] = []
+
+    for arm in stmt.arms {
+      let patternReg = self.emitPattern(arm.pattern, exprReg)
+      let jmpNext = self.instructions.length
+      self.emitInstruction(OpCode.TEST, patternReg, 0, 0)
+      self.emitInstruction(OpCode.JMP, 0, 0, 0)
+
+      if arm.guard != nil {
+        let guardReg = self.emitExpression(arm.guard)
+        let jmpGuardFail = self.instructions.length
+        self.emitInstruction(OpCode.TEST, guardReg, 0, 0)
+        self.emitInstruction(OpCode.JMP, 0, 0, 0)
+
+        if arm.body.kind == "Block" {
+          self.emitBlock(arm.body)
+        } else {
+          self.emitExpression(arm.body)
+        }
+
+        let jmpEnd = self.instructions.length
+        self.emitInstruction(OpCode.JMP, 0, 0, 0)
+        endJumps.push(jmpEnd)
+
+        let nextPos = self.instructions.length
+        self.patchJump(jmpGuardFail + 1, nextPos - jmpGuardFail - 1)
+      } else {
+        if arm.body.kind == "Block" {
+          self.emitBlock(arm.body)
+        } else {
+          self.emitExpression(arm.body)
+        }
+
+        let jmpEnd = self.instructions.length
+        self.emitInstruction(OpCode.JMP, 0, 0, 0)
+        endJumps.push(jmpEnd)
+      }
+
+      let nextPos = self.instructions.length
+      self.patchJump(jmpNext + 1, nextPos - jmpNext - 1)
+    }
+
+    let finalPos = self.instructions.length
+    for jmp in endJumps {
+      self.patchJump(jmp, finalPos - jmp - 1)
+    }
+
+    self.freeReg = exprReg
+  }
+
+  fn emitPattern(self, pattern: AST.Pattern, valueReg: number) -> number {
+    let resultReg = self.allocReg()
+
+    match pattern.kind {
+      "LiteralPattern" => {
+        let lit = pattern.value
+        let litReg = self.allocReg()
+        if lit.value as number != nil {
+          self.emitInstruction(OpCode.LOADINT, litReg, lit.value as number, 0)
+        } else if lit.value as string != nil {
+          let idx = self.addConstant({ type: "string", value: lit.value as string })
+          self.emitInstruction(OpCode.LOADK, litReg, idx, 0)
+        } else if lit.value as bool != nil {
+          self.emitInstruction(OpCode.LOADBOOL, litReg, (lit.value as bool) ? 1 : 0, 0)
+        }
+        self.emitInstruction(OpCode.EQ, 1, valueReg, litReg)
+        self.emitInstruction(OpCode.LOADBOOL, resultReg, 1, 0)
+      }
+      "WildcardPattern" => {
+        self.emitInstruction(OpCode.LOADBOOL, resultReg, 1, 0)
+      }
+      "VariablePattern" => {
+        self.locals[pattern.name] = valueReg
+        self.emitInstruction(OpCode.LOADBOOL, resultReg, 1, 0)
+      }
+      _ => {
+        self.emitInstruction(OpCode.LOADBOOL, resultReg, 1, 0)
+      }
+    }
+
+    return resultReg
+  }
+
+  fn emitReturn(self, stmt: AST.ReturnStmt) {
+    if stmt.value != nil {
+      let reg = self.emitExpression(stmt.value)
+      self.emitInstruction(OpCode.RETURN, reg, 2, 0)
+    } else {
+      self.emitInstruction(OpCode.RETURN, 0, 1, 0)
+    }
+  }
+
+  fn emitBreak(self, stmt: AST.BreakStmt) {
+    if self.loopStack.length == 0 {
+      panic("break outside of loop")
+    }
+    let jmpIdx = self.instructions.length
+    self.emitInstruction(OpCode.JMP, 0, 0, 0)
+    self.loopStack[self.loopStack.length - 1].breakPatches.push(jmpIdx)
+  }
+
+  fn emitContinue(self, stmt: AST.ContinueStmt) {
+    if self.loopStack.length == 0 {
+      panic("continue outside of loop")
+    }
+    let loopInfo = self.loopStack[self.loopStack.length - 1]
+    let backJmp = -(self.instructions.length - loopInfo.start + 1)
+    self.emitABx(OpCode.JMP, 0, backJmp)
+  }
+
+  fn emitBlock(self, block: AST.Block) {
+    let oldLocals = self.locals
+    let oldFreeReg = self.freeReg
+
+    for stmt in block.statements {
+      self.emitStatement(stmt)
+    }
+
+    self.locals = oldLocals
+    self.freeReg = oldFreeReg
+  }
+
+  fn emitStructDecl(self, decl: AST.StructDecl) {}
+  fn emitEnumDecl(self, decl: AST.EnumDecl) {}
+
+  fn emitDefer(self, stmt: AST.DeferStmt) {
+    let reg = self.emitExpression(stmt.expression)
+    self.emitInstruction(OpCode.DEFER, reg, 0, 0)
+  }
+
+  fn emitGuard(self, stmt: AST.GuardStmt) {
+    let condReg = self.emitExpression(stmt.condition)
+    let jmpElse = self.instructions.length
+    self.emitInstruction(OpCode.TEST, condReg, 0, 1)
+    self.emitInstruction(OpCode.JMP, 0, 0, 0)
+
+    self.emitBlock(stmt.elseBranch)
+
+    let endPos = self.instructions.length
+    self.patchJump(jmpElse + 1, endPos - jmpElse - 1)
+    self.freeReg = condReg
+  }
+
+  fn emitExpression(self, expr: AST.Expression, targetReg: number | nil) -> number {
+    let reg = targetReg ?? self.allocReg()
+
+    match expr.kind {
+      "Literal" => self.emitLiteral(expr, reg)
+      "Identifier" => self.emitIdentifier(expr, reg)
+      "Binary" => self.emitBinary(expr, reg)
+      "Unary" => self.emitUnary(expr, reg)
+      "Call" => self.emitCall(expr, reg)
+      "Member" => self.emitMember(expr, reg)
+      "Index" => self.emitIndex(expr, reg)
+      "Assignment" => self.emitAssignment(expr, reg)
+      "Lambda" => self.emitLambda(expr, reg)
+      "Array" => self.emitArray(expr, reg)
+      "Table" => self.emitTable(expr, reg)
+      "Ternary" => self.emitTernary(expr, reg)
+      "Await" => self.emitAwait(expr, reg)
+      "TypeCast" => self.emitExpression(expr.expression, reg)
+      "TypeCheck" => self.emitTypeCheck(expr, reg)
+      "BlockExpr" => self.emitBlock(expr.block)
+      "Spread" => self.emitExpression(expr.expression, reg)
+      "Range" => self.emitRange(expr, reg)
+      "Tuple" => self.emitTuple(expr, reg)
+      "Try" => self.emitTry(expr, reg)
+      "Yield" => self.emitYield(expr, reg)
+      _ => panic("Unknown expression kind")
+    }
+
+    return reg
+  }
+
+  fn emitLiteral(self, expr: AST.Literal, reg: number) {
+    if expr.value == nil {
+      self.emitInstruction(OpCode.LOADNIL, reg, 0, 0)
+    } else if expr.value as bool != nil {
+      self.emitInstruction(OpCode.LOADBOOL, reg, (expr.value as bool) ? 1 : 0, 0)
+    } else if expr.value as number != nil {
+      let n = expr.value as number
+      if n as number == n && n >= -131071 && n <= 131071 {
+        self.emitABx(OpCode.LOADINT, reg, n)
+      } else {
+        let idx = self.addConstant({ type: "number", value: n })
+        self.emitABx(OpCode.LOADK, reg, idx)
+      }
+    } else if expr.value as string != nil {
+      let idx = self.addConstant({ type: "string", value: expr.value as string })
+      self.emitABx(OpCode.LOADK, reg, idx)
+    }
+  }
+
+  fn emitIdentifier(self, expr: AST.Identifier, reg: number) {
+    let localReg = self.locals[expr.name]
+    if localReg != nil {
+      if reg != localReg {
+        self.emitInstruction(OpCode.MOVE, reg, localReg, 0)
+      }
+    } else {
+      let idx = self.addConstant({ type: "string", value: expr.name })
+      self.emitABx(OpCode.GETGLOBAL, reg, idx)
+    }
+  }
+
+  fn emitBinary(self, expr: AST.BinaryExpr, reg: number) {
+    let leftReg = self.emitExpression(expr.left)
+    let rightReg = self.emitExpression(expr.right)
+
+    match expr.operator {
+      "+" => self.emitInstruction(OpCode.ADD, reg, leftReg, rightReg)
+      "-" => self.emitInstruction(OpCode.SUB, reg, leftReg, rightReg)
+      "*" => self.emitInstruction(OpCode.MUL, reg, leftReg, rightReg)
+      "/" => self.emitInstruction(OpCode.DIV, reg, leftReg, rightReg)
+      "%" => self.emitInstruction(OpCode.MOD, reg, leftReg, rightReg)
+      "**" => self.emitInstruction(OpCode.POW, reg, leftReg, rightReg)
+      ".." => self.emitInstruction(OpCode.CONCAT, reg, leftReg, rightReg)
+      "==" => {
+        self.emitInstruction(OpCode.EQ, 1, leftReg, rightReg)
+        self.emitInstruction(OpCode.LOADBOOL, reg, 1, 1)
+        self.emitInstruction(OpCode.LOADBOOL, reg, 0, 0)
+      }
+      "!=" => {
+        self.emitInstruction(OpCode.EQ, 0, leftReg, rightReg)
+        self.emitInstruction(OpCode.LOADBOOL, reg, 1, 1)
+        self.emitInstruction(OpCode.LOADBOOL, reg, 0, 0)
+      }
+      "<" => {
+        self.emitInstruction(OpCode.LT, 1, leftReg, rightReg)
+        self.emitInstruction(OpCode.LOADBOOL, reg, 1, 1)
+        self.emitInstruction(OpCode.LOADBOOL, reg, 0, 0)
+      }
+      "<=" => {
+        self.emitInstruction(OpCode.LE, 1, leftReg, rightReg)
+        self.emitInstruction(OpCode.LOADBOOL, reg, 1, 1)
+        self.emitInstruction(OpCode.LOADBOOL, reg, 0, 0)
+      }
+      ">" => {
+        self.emitInstruction(OpCode.LT, 1, rightReg, leftReg)
+        self.emitInstruction(OpCode.LOADBOOL, reg, 1, 1)
+        self.emitInstruction(OpCode.LOADBOOL, reg, 0, 0)
+      }
+      ">=" => {
+        self.emitInstruction(OpCode.LE, 1, rightReg, leftReg)
+        self.emitInstruction(OpCode.LOADBOOL, reg, 1, 1)
+        self.emitInstruction(OpCode.LOADBOOL, reg, 0, 0)
+      }
+      "&&" => {
+        let jmpFalse = self.instructions.length
+        self.emitInstruction(OpCode.TEST, leftReg, 0, 0)
+        self.emitInstruction(OpCode.JMP, 0, 0, 0)
+        self.emitInstruction(OpCode.MOVE, reg, rightReg, 0)
+        let endPos = self.instructions.length
+        self.patchJump(jmpFalse + 1, endPos - jmpFalse - 1)
+      }
+      "||" => {
+        let jmpTrue = self.instructions.length
+        self.emitInstruction(OpCode.TEST, leftReg, 0, 1)
+        self.emitInstruction(OpCode.JMP, 0, 0, 0)
+        self.emitInstruction(OpCode.MOVE, reg, rightReg, 0)
+        let endPos = self.instructions.length
+        self.patchJump(jmpTrue + 1, endPos - jmpTrue - 1)
+      }
+      _ => self.emitInstruction(OpCode.ADD, reg, leftReg, rightReg)
+    }
+
+    self.freeReg = leftReg
+  }
+
+  fn emitUnary(self, expr: AST.UnaryExpr, reg: number) {
+    let operandReg = self.emitExpression(expr.operand)
+
+    match expr.operator {
+      "-" => self.emitInstruction(OpCode.UNM, reg, operandReg, 0)
+      "!" => self.emitInstruction(OpCode.NOT, reg, operandReg, 0)
+      "not" => self.emitInstruction(OpCode.NOT, reg, operandReg, 0)
+      "#" => self.emitInstruction(OpCode.LEN, reg, operandReg, 0)
+      "~" => self.emitInstruction(OpCode.UNM, reg, operandReg, 0)
+      _ => self.emitInstruction(OpCode.MOVE, reg, operandReg, 0)
+    }
+
+    self.freeReg = operandReg
+  }
+
+  fn emitCall(self, expr: AST.CallExpr, reg: number) {
+    let funcReg = self.emitExpression(expr.callee)
+    let argRegs: [number] = []
+    for arg in expr.args {
+      argRegs.push(self.emitExpression(arg.value))
+    }
+
+    for i in 0..argRegs.length {
+      if argRegs[i] != funcReg + 1 + i {
+        self.emitInstruction(OpCode.MOVE, funcReg + 1 + i, argRegs[i], 0)
+      }
+    }
+
+    if expr.isTail {
+      self.emitInstruction(OpCode.TAILCALL, funcReg, argRegs.length + 1, 0)
+    } else {
+      self.emitInstruction(OpCode.CALL, funcReg, argRegs.length + 1, 2)
+    }
+
+    if reg != funcReg {
+      self.emitInstruction(OpCode.MOVE, reg, funcReg, 0)
+    }
+
+    self.freeReg = funcReg
+  }
+
+  fn emitMember(self, expr: AST.MemberExpr, reg: number) {
+    let objReg = self.emitExpression(expr.object)
+    let keyIdx = self.addConstant({ type: "string", value: expr.property })
+    self.emitABx(OpCode.GETTABLE, reg, objReg, keyIdx + 256)
+    self.freeReg = objReg
+  }
+
+  fn emitIndex(self, expr: AST.IndexExpr, reg: number) {
+    let objReg = self.emitExpression(expr.object)
+    let idxReg = self.emitExpression(expr.index)
+    self.emitInstruction(OpCode.GETTABLE, reg, objReg, idxReg)
+    self.freeReg = objReg
+  }
+
+  fn emitAssignment(self, expr: AST.AssignmentExpr, reg: number) {
+    let valueReg = self.emitExpression(expr.value)
+
+    if expr.target.kind == "Identifier" {
+      let name = (expr.target as AST.Identifier).name
+      let localReg = self.locals[name]
+      if localReg != nil {
+        match expr.operator {
+          "=" => self.emitInstruction(OpCode.MOVE, localReg, valueReg, 0)
+          "+=" => self.emitInstruction(OpCode.ADD, localReg, localReg, valueReg)
+          "-=" => self.emitInstruction(OpCode.SUB, localReg, localReg, valueReg)
+          "*=" => self.emitInstruction(OpCode.MUL, localReg, localReg, valueReg)
+          "/=" => self.emitInstruction(OpCode.DIV, localReg, localReg, valueReg)
+        }
+      } else {
+        let idx = self.addConstant({ type: "string", value: name })
+        self.emitABx(OpCode.SETGLOBAL, valueReg, idx)
+      }
+    } else if expr.target.kind == "Member" {
+      let member = expr.target as AST.MemberExpr
+      let objReg = self.emitExpression(member.object)
+      let keyIdx = self.addConstant({ type: "string", value: member.property })
+      self.emitABx(OpCode.SETTABLE, objReg, keyIdx + 256, valueReg)
+    } else if expr.target.kind == "Index" {
+      let index = expr.target as AST.IndexExpr
+      let objReg = self.emitExpression(index.object)
+      let idxReg = self.emitExpression(index.index)
+      self.emitInstruction(OpCode.SETTABLE, objReg, idxReg, valueReg)
+    }
+
+    self.emitInstruction(OpCode.MOVE, reg, valueReg, 0)
+    self.freeReg = valueReg
+  }
+
+  fn emitLambda(self, expr: AST.LambdaExpr, reg: number) {
+    let fnDecl: AST.FnDecl = {
+      kind: "FnDecl",
+      name: "",
+      isAsync: expr.isAsync,
+      isPub: false,
+      generics: [],
+      params: expr.params,
+      returnType: expr.returnType,
+      body: expr.body as AST.Block,
+      span: expr.span,
+    }
+
+    if expr.body.kind != "Block" {
+      fnDecl.body = {
+        kind: "Block",
+        statements: [{ kind: "Return", value: expr.body as AST.Expression, span: expr.span }],
+        span: expr.span,
+      }
+    }
+
+    let proto = self.emitFunctionProto(fnDecl)
+    let protoIdx = self.protos.length - 1
+    self.emitABx(OpCode.CLOSURE, reg, protoIdx)
+  }
+
+  fn emitArray(self, expr: AST.ArrayExpr, reg: number) {
+    self.emitInstruction(OpCode.NEWTABLE, reg, expr.elements.length, 0)
+    for i in 0..expr.elements.length {
+      let elemReg = self.emitExpression(expr.elements[i])
+      self.emitInstruction(OpCode.SETTABLE, reg, i + 1, elemReg)
+    }
+  }
+
+  fn emitTable(self, expr: AST.TableExpr, reg: number) {
+    self.emitInstruction(OpCode.NEWTABLE, reg, 0, 0)
+    for entry in expr.entries {
+      let keyReg: number
+      if entry.key as string != nil {
+        keyReg = self.allocReg()
+        let idx = self.addConstant({ type: "string", value: entry.key as string })
+        self.emitABx(OpCode.LOADK, keyReg, idx)
+      } else {
+        keyReg = self.emitExpression(entry.key as AST.Expression)
+      }
+      let valueReg = self.emitExpression(entry.value)
+      self.emitInstruction(OpCode.SETTABLE, reg, keyReg, valueReg)
+    }
+  }
+
+  fn emitTernary(self, expr: AST.TernaryExpr, reg: number) {
+    let condReg = self.emitExpression(expr.condition)
+    let jmpElse = self.instructions.length
+    self.emitInstruction(OpCode.TEST, condReg, 0, 0)
+    self.emitInstruction(OpCode.JMP, 0, 0, 0)
+
+    let thenReg = self.emitExpression(expr.thenExpr)
+    if thenReg != reg {
+      self.emitInstruction(OpCode.MOVE, reg, thenReg, 0)
+    }
+
+    let jmpEnd = self.instructions.length
+    self.emitInstruction(OpCode.JMP, 0, 0, 0)
+
+    let elsePos = self.instructions.length
+    self.patchJump(jmpElse + 1, elsePos - jmpElse - 1)
+
+    let elseReg = self.emitExpression(expr.elseExpr)
+    if elseReg != reg {
+      self.emitInstruction(OpCode.MOVE, reg, elseReg, 0)
+    }
+
+    let endPos = self.instructions.length
+    self.patchJump(jmpEnd, endPos - jmpEnd - 1)
+
+    self.freeReg = condReg
+  }
+
+  fn emitAwait(self, expr: AST.AwaitExpr, reg: number) {
+    let operandReg = self.emitExpression(expr.expression)
+    self.emitInstruction(OpCode.AWAIT, reg, operandReg, 0)
+    self.freeReg = operandReg
+  }
+
+  fn emitTypeCheck(self, expr: AST.TypeCheckExpr, reg: number) {
+    let valueReg = self.emitExpression(expr.expression)
+    let typeId = self.getRuntimeTypeId(expr.checkType)
+    self.emitInstruction(OpCode.TYPECHECK, valueReg, typeId, 0)
+    self.emitInstruction(OpCode.LOADBOOL, reg, 1, 0)
+    self.freeReg = valueReg
+  }
+
+  fn emitRange(self, expr: AST.RangeExpr, reg: number) {
+    self.emitInstruction(OpCode.NEWTABLE, reg, 0, 0)
+    if expr.start != nil {
+      let startReg = self.emitExpression(expr.start)
+      let startKey = self.addConstant({ type: "string", value: "start" })
+      self.emitABx(OpCode.SETTABLE, reg, startKey + 256, startReg)
+    }
+    if expr.end != nil {
+      let endReg = self.emitExpression(expr.end)
+      let endKey = self.addConstant({ type: "string", value: "end" })
+      self.emitABx(OpCode.SETTABLE, reg, endKey + 256, endReg)
+    }
+    let inclusiveKey = self.addConstant({ type: "string", value: "inclusive" })
+    self.emitInstruction(OpCode.LOADBOOL, reg + 1, expr.inclusive ? 1 : 0, 0)
+    self.emitABx(OpCode.SETTABLE, reg, inclusiveKey + 256, reg + 1)
+  }
+
+  fn emitTuple(self, expr: AST.TupleExpr, reg: number) {
+    self.emitInstruction(OpCode.NEWTABLE, reg, expr.elements.length, 0)
+    for i in 0..expr.elements.length {
+      let elemReg = self.emitExpression(expr.elements[i])
+      self.emitInstruction(OpCode.SETTABLE, reg, i + 1, elemReg)
+    }
+  }
+
+  fn emitTry(self, expr: AST.TryExpr, reg: number) {
+    let tryReg = self.emitExpression(expr.expression)
+    if expr.catchBody != nil {
+      self.emitBlock(expr.catchBody)
+    }
+    if expr.finallyBody != nil {
+      self.emitBlock(expr.finallyBody)
+    }
+    self.emitInstruction(OpCode.MOVE, reg, tryReg, 0)
+  }
+
+  fn emitYield(self, expr: AST.YieldExpr, reg: number) {
+    if expr.expression != nil {
+      let valReg = self.emitExpression(expr.expression)
+      self.emitInstruction(OpCode.MOVE, reg, valReg, 0)
+    } else {
+      self.emitInstruction(OpCode.LOADNIL, reg, 0, 0)
+    }
+  }
+
+  fn getRuntimeTypeId(self, typeExpr: AST.TypeExpr) -> number {
+    match typeExpr.kind {
+      "NamedType" => {
+        let name = (typeExpr as AST.NamedType).name
+        match name {
+          "nil" => return 0
+          "bool" => return 1
+          "number" => return 2
+          "string" => return 3
+          "table" => return 4
+          "function" => return 5
+          "thread" => return 6
+          _ => return 7
+        }
+      }
+      _ => return 7
+    }
+  }
+
+  fn emitInstruction(self, op: OpCode, a: number, b: number, c: number) {
+    let instruction = (op & 0x3F) | ((a & 0xFF) << 6) | ((b & 0x1FF) << 14) | ((c & 0x1FF) << 23)
+    self.instructions.push(instruction)
+    self.lineInfo.push(self.currentLine)
+  }
+
+  fn emitABx(self, op: OpCode, a: number, bx: number) {
+    let instruction = (op & 0x3F) | ((a & 0xFF) << 6) | ((bx & 0x3FFFF) << 14)
+    self.instructions.push(instruction)
+    self.lineInfo.push(self.currentLine)
+  }
+
+  fn patchJump(self, instructionIndex: number, offset: number) {
+    let inst = self.instructions[instructionIndex]
+    let op = inst & 0x3F
+    let a = (inst >> 6) & 0xFF
+    self.instructions[instructionIndex] = (op & 0x3F) | ((a & 0xFF) << 6) | ((offset & 0x3FFFF) << 14)
+  }
+
+  fn addConstant(self, c: Constant) -> number {
+    for i in 0..self.constants.length {
+      let existing = self.constants[i]
+      if existing.type == c.type && existing.value == c.value {
+        return i
+      }
+    }
+    self.constants.push(c)
+    return self.constants.length - 1
+  }
+
+  fn allocReg(self) -> number {
+    let reg = self.freeReg
+    self.freeReg = self.freeReg + 1
+    return reg
+  }
+}
+
+pub fn emit(program: AST.Program) -> [number] {
+  return BytecodeEmitter.new().emit(program)
+}
+
+fn numberToBytes(n: number) -> [number] {
+  let buf: [number] = []
+  let view = { buffer: buf }
+  // Simplified - just push 8 zeros for now
+  for i in 0..8 {
+    buf.push(0)
+  }
+  return buf
+}
