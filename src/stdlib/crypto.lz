@@ -1,0 +1,14 @@
+// Luazi Crypto Module
+
+pub fn getCrypto() -> CryptoModule {
+  return {
+    hash: fn(algorithm: string, data: string) -> string {
+      // Runtime-provided implementation
+      return ""
+    },
+    randomBytes: fn(size: number) -> string {
+      // Runtime-provided implementation
+      return ""
+    },
+  }
+}
