@@ -1,0 +1,397 @@
+// Luazi Type System
+// Core type definitions and operations
+
+pub enum TypeKind {
+  Nil,
+  Bool,
+  Number,
+  String,
+  Table,
+  Array,
+  Function,
+  Tuple,
+  Struct,
+  Enum,
+  Trait,
+  Union,
+  Intersection,
+  Generic,
+  Ref,
+  Mut,
+  Optional,
+  Self,
+  Any,
+  Unknown,
+  Never,
+  Named,
+}
+
+pub type BaseType = {
+  kind: TypeKind,
+}
+
+pub type NilType = { kind: TypeKind }
+pub type BoolType = { kind: TypeKind }
+pub type NumberType = { kind: TypeKind }
+pub type StringType = { kind: TypeKind }
+pub type AnyType = { kind: TypeKind }
+pub type UnknownType = { kind: TypeKind, id: number | nil }
+pub type NeverType = { kind: TypeKind }
+pub type SelfType = { kind: TypeKind }
+
+pub type TableType = {
+  kind: TypeKind,
+  keyType: Type,
+  valueType: Type,
+}
+
+pub type ArrayType = {
+  kind: TypeKind,
+  elementType: Type,
+}
+
+pub type FunctionParam = {
+  name: string,
+  type: Type,
+  isOptional: bool,
+  isRest: bool,
+}
+
+pub type FunctionType = {
+  kind: TypeKind,
+  params: [FunctionParam],
+  returnType: Type,
+  isAsync: bool | nil,
+}
+
+pub type TupleType = {
+  kind: TypeKind,
+  elements: [Type],
+}
+
+pub type StructType = {
+  kind: TypeKind,
+  name: string,
+  fields: {string: Type},
+  methods: {string: FunctionType},
+}
+
+pub type EnumVariant = {
+  name: string,
+  fields: [Type],
+}
+
+pub type EnumType = {
+  kind: TypeKind,
+  name: string,
+  variants: [EnumVariant],
+}
+
+pub type TraitType = {
+  kind: TypeKind,
+  name: string,
+  methods: {string: FunctionType},
+}
+
+pub type UnionType = {
+  kind: TypeKind,
+  types: [Type],
+}
+
+pub type IntersectionType = {
+  kind: TypeKind,
+  types: [Type],
+}
+
+pub type GenericType = {
+  kind: TypeKind,
+  name: string,
+  args: [Type],
+}
+
+pub type RefType = {
+  kind: TypeKind,
+  inner: Type,
+}
+
+pub type MutType = {
+  kind: TypeKind,
+  inner: Type,
+}
+
+pub type OptionalType = {
+  kind: TypeKind,
+  inner: Type,
+}
+
+pub type NamedType = {
+  kind: TypeKind,
+  name: string,
+}
+
+pub type Type = NilType | BoolType | NumberType | StringType | TableType | ArrayType | FunctionType | TupleType | StructType | EnumType | TraitType | UnionType | IntersectionType | GenericType | RefType | MutType | OptionalType | SelfType | AnyType | UnknownType | NeverType | NamedType
+
+// Type Constructors
+
+pub const tNil: NilType = { kind: TypeKind.Nil }
+pub const tBool: BoolType = { kind: TypeKind.Bool }
+pub const tNumber: NumberType = { kind: TypeKind.Number }
+pub const tString: StringType = { kind: TypeKind.String }
+pub const tAny: AnyType = { kind: TypeKind.Any }
+pub const tUnknown: UnknownType = { kind: TypeKind.Unknown, id: nil }
+pub const tNever: NeverType = { kind: TypeKind.Never }
+
+pub fn tTable(keyType: Type, valueType: Type) -> TableType {
+  return { kind: TypeKind.Table, keyType: keyType, valueType: valueType }
+}
+
+pub fn tArray(elementType: Type) -> ArrayType {
+  return { kind: TypeKind.Array, elementType: elementType }
+}
+
+pub fn tFunction(params: [FunctionParam], returnType: Type, isAsync: bool | nil) -> FunctionType {
+  return { kind: TypeKind.Function, params: params, returnType: returnType, isAsync: isAsync }
+}
+
+pub fn tTuple(elements: [Type]) -> TupleType {
+  return { kind: TypeKind.Tuple, elements: elements }
+}
+
+pub fn tUnion(a: Type, b: Type) -> UnionType {
+  if a.kind == TypeKind.Any || b.kind == TypeKind.Any {
+    return { kind: TypeKind.Union, types: [tAny] }
+  }
+  if a.kind == TypeKind.Never {
+    return { kind: TypeKind.Union, types: [b] }
+  }
+  if b.kind == TypeKind.Never {
+    return { kind: TypeKind.Union, types: [a] }
+  }
+  if a.kind == TypeKind.Union {
+    let types = (a as UnionType).types
+    types.push(b)
+    return { kind: TypeKind.Union, types: types }
+  }
+  return { kind: TypeKind.Union, types: [a, b] }
+}
+
+pub fn tIntersection(a: Type, b: Type) -> IntersectionType {
+  return { kind: TypeKind.Intersection, types: [a, b] }
+}
+
+pub fn tGeneric(name: string, args: [Type]) -> GenericType {
+  return { kind: TypeKind.Generic, name: name, args: args }
+}
+
+pub fn tRef(inner: Type) -> RefType {
+  return { kind: TypeKind.Ref, inner: inner }
+}
+
+pub fn tMut(inner: Type) -> MutType {
+  return { kind: TypeKind.Mut, inner: inner }
+}
+
+pub fn tOptional(inner: Type) -> OptionalType {
+  return { kind: TypeKind.Optional, inner: inner }
+}
+
+pub fn tNamed(name: string) -> NamedType {
+  return { kind: TypeKind.Named, name: name }
+}
+
+// Type Operations
+
+pub fn typeToString(type: Type) -> string {
+  match type.kind {
+    TypeKind.Nil => return "nil"
+    TypeKind.Bool => return "bool"
+    TypeKind.Number => return "number"
+    TypeKind.String => return "string"
+    TypeKind.Any => return "any"
+    TypeKind.Unknown => return "unknown"
+    TypeKind.Never => return "never"
+    TypeKind.Self => return "Self"
+    TypeKind.Named => return (type as NamedType).name
+    TypeKind.Table => {
+      let t = type as TableType
+      return "table<" + typeToString(t.keyType) + ", " + typeToString(t.valueType) + ">"
+    }
+    TypeKind.Array => {
+      let t = type as ArrayType
+      return "[" + typeToString(t.elementType) + "]"
+    }
+    TypeKind.Function => {
+      let t = type as FunctionType
+      let params = ""
+      for i in 0..t.params.length {
+        if i > 0 {
+          params = params + ", "
+        }
+        let p = t.params[i]
+        params = params + p.name + ": " + typeToString(p.type)
+        if p.isOptional {
+          params = params + "?"
+        }
+        if p.isRest {
+          params = params + "..."
+        }
+      }
+      let async = ""
+      if t.isAsync != nil && t.isAsync {
+        async = "async "
+      }
+      return async + "fn(" + params + ") -> " + typeToString(t.returnType)
+    }
+    TypeKind.Tuple => {
+      let t = type as TupleType
+      let result = "("
+      for i in 0..t.elements.length {
+        if i > 0 {
+          result = result + ", "
+        }
+        result = result + typeToString(t.elements[i])
+      }
+      return result + ")"
+    }
+    TypeKind.Struct => {
+      let t = type as StructType
+      return t.name
+    }
+    TypeKind.Enum => {
+      let t = type as EnumType
+      return t.name
+    }
+    TypeKind.Trait => {
+      let t = type as TraitType
+      return t.name
+    }
+    TypeKind.Union => {
+      let t = type as UnionType
+      let result = ""
+      for i in 0..t.types.length {
+        if i > 0 {
+          result = result + " | "
+        }
+        result = result + typeToString(t.types[i])
+      }
+      return result
+    }
+    TypeKind.Intersection => {
+      let t = type as IntersectionType
+      let result = ""
+      for i in 0..t.types.length {
+        if i > 0 {
+          result = result + " & "
+        }
+        result = result + typeToString(t.types[i])
+      }
+      return result
+    }
+    TypeKind.Generic => {
+      let t = type as GenericType
+      let args = ""
+      for i in 0..t.args.length {
+        if i > 0 {
+          args = args + ", "
+        }
+        args = args + typeToString(t.args[i])
+      }
+      return t.name + "<" + args + ">"
+    }
+    TypeKind.Ref => {
+      let t = type as RefType
+      return "&" + typeToString(t.inner)
+    }
+    TypeKind.Mut => {
+      let t = type as MutType
+      return "mut " + typeToString(t.inner)
+    }
+    TypeKind.Optional => {
+      let t = type as OptionalType
+      return typeToString(t.inner) + "?"
+    }
+    _ => return "unknown"
+  }
+}
+
+pub fn isSubtype(a: Type, b: Type) -> bool {
+  if a.kind == b.kind {
+    match a.kind {
+      TypeKind.Nil | TypeKind.Bool | TypeKind.Number | TypeKind.String | TypeKind.Any | TypeKind.Never | TypeKind.Self => return true
+      TypeKind.Array => return isSubtype((a as ArrayType).elementType, (b as ArrayType).elementType)
+      TypeKind.Table => {
+        let ta = a as TableType
+        let tb = b as TableType
+        return isSubtype(ta.keyType, tb.keyType) && isSubtype(ta.valueType, tb.valueType)
+      }
+      TypeKind.Function => {
+        let fa = a as FunctionType
+        let fb = b as FunctionType
+        if fa.params.length != fb.params.length {
+          return false
+        }
+        for i in 0..fa.params.length {
+          if !isSubtype(fb.params[i].type, fa.params[i].type) {
+            return false
+          }
+        }
+        return isSubtype(fa.returnType, fb.returnType)
+      }
+      TypeKind.Union => {
+        let ua = a as UnionType
+        for t in ua.types {
+          if !isSubtype(t, b) {
+            return false
+          }
+        }
+        return true
+      }
+      TypeKind.Optional => return isSubtype((a as OptionalType).inner, (b as OptionalType).inner)
+      TypeKind.Ref => return isSubtype((a as RefType).inner, (b as RefType).inner)
+      TypeKind.Mut => return isSubtype((a as MutType).inner, (b as MutType).inner)
+      _ => return true
+    }
+  }
+
+  if b.kind == TypeKind.Any {
+    return true
+  }
+  if a.kind == TypeKind.Never {
+    return true
+  }
+  if b.kind == TypeKind.Union {
+    let ub = b as UnionType
+    for t in ub.types {
+      if isSubtype(a, t) {
+        return true
+      }
+    }
+    return false
+  }
+  if a.kind == TypeKind.Optional && b.kind == TypeKind.Nil {
+    return true
+  }
+
+  return false
+}
+
+pub fn getBaseType(type: Type) -> Type {
+  match type.kind {
+    TypeKind.Ref => return getBaseType((type as RefType).inner)
+    TypeKind.Mut => return getBaseType((type as MutType).inner)
+    TypeKind.Optional => return getBaseType((type as OptionalType).inner)
+    _ => return type
+  }
+}
+
+pub fn isPrimitive(type: Type) -> bool {
+  return type.kind == TypeKind.Nil || type.kind == TypeKind.Bool || type.kind == TypeKind.Number || type.kind == TypeKind.String
+}
+
+pub fn isReference(type: Type) -> bool {
+  return type.kind == TypeKind.Ref || type.kind == TypeKind.Mut || type.kind == TypeKind.Table || type.kind == TypeKind.Array || type.kind == TypeKind.Function || type.kind == TypeKind.Struct || type.kind == TypeKind.Enum || type.kind == TypeKind.Trait || type.kind == TypeKind.Generic
+}
+
+pub fn isNullable(type: Type) -> bool {
+  return type.kind == TypeKind.Nil || type.kind == TypeKind.Optional || type.kind == TypeKind.Any || type.kind == TypeKind.Unknown
+}
