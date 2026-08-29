@@ -1,0 +1,665 @@
+// Luazi VM
+// Pure Luazi VM with bytecode interpreter
+
+pub type VMConfig = {
+  memoryPages: number | nil,
+  maxMemoryPages: number | nil,
+  stackSize: number | nil,
+  enableSIMD: bool | nil,
+  enableJIT: bool | nil,
+}
+
+pub type VMStats = {
+  memoryUsed: number,
+  memoryTotal: number,
+  instructionsExecuted: number,
+  gcCollections: number,
+}
+
+pub enum OpCode {
+  NOP = 0x00,
+  LOADK = 0x01,
+  LOADNIL = 0x02,
+  LOADBOOL = 0x03,
+  LOADINT = 0x04,
+  MOVE = 0x05,
+  GETGLOBAL = 0x06,
+  SETGLOBAL = 0x07,
+  GETUPVAL = 0x08,
+  SETUPVAL = 0x09,
+  GETTABLE = 0x0A,
+  SETTABLE = 0x0B,
+  NEWTABLE = 0x0C,
+  SELF = 0x0D,
+  ADD = 0x0E,
+  SUB = 0x0F,
+  MUL = 0x10,
+  DIV = 0x11,
+  MOD = 0x12,
+  POW = 0x13,
+  UNM = 0x14,
+  NOT = 0x15,
+  LEN = 0x16,
+  CONCAT = 0x17,
+  JMP = 0x18,
+  EQ = 0x19,
+  LT = 0x1A,
+  LE = 0x1B,
+  TEST = 0x1C,
+  TESTSET = 0x1D,
+  CALL = 0x1E,
+  TAILCALL = 0x1F,
+  RETURN = 0x20,
+  FORLOOP = 0x21,
+  FORPREP = 0x22,
+  TFORLOOP = 0x23,
+  SETLIST = 0x24,
+  CLOSE = 0x25,
+  CLOSURE = 0x26,
+  VARARG = 0x27,
+  TYPECHECK = 0x28,
+  ASSERT = 0x29,
+  ASYNC = 0x2A,
+  AWAIT = 0x2B,
+  SIMD_ADD = 0x2C,
+  SIMD_MUL = 0x2D,
+  SIMD_DOT = 0x2E,
+  GUARD = 0x2F,
+  DEFER = 0x30,
+  MATCH = 0x31,
+}
+
+pub type VMValue = {
+  type: string,
+  value: any,
+}
+
+pub type Proto = {
+  constants: [VMValue],
+  instructions: [number],
+  upvalues: [UpvalueInfo],
+  params: number,
+  locals: [string],
+  lineInfo: [number],
+}
+
+pub type UpvalueInfo = {
+  name: string,
+  index: number,
+  isLocal: bool,
+}
+
+pub struct VM {
+  stack: [VMValue],
+  constants: [VMValue],
+  globals: {string: VMValue},
+  pc: number,
+  fp: number,
+  code: [number],
+  protos: [Proto],
+  callStack: [number],
+  frameStack: [number],
+  config: VMConfig,
+  stats: VMStats,
+}
+
+impl VM {
+  pub fn new(config: VMConfig | nil) -> Self {
+    if config == nil {
+      config = {}
+    }
+    let vm = Self {
+      stack: [],
+      constants: [],
+      globals: {},
+      pc: 0,
+      fp: 0,
+      code: [],
+      protos: [],
+      callStack: [],
+      frameStack: [],
+      config: config,
+      stats: { memoryUsed: 0, memoryTotal: 0, instructionsExecuted: 0, gcCollections: 0 },
+    }
+    vm.initBuiltins()
+    return vm
+  }
+
+  fn initBuiltins(self) {
+    self.globals["print"] = { type: "function", value: fn(...args: [VMValue]) -> VMValue {
+      for arg in args {
+        // print logic
+      }
+      return { type: "nil", value: nil }
+    }}
+    self.globals["println"] = { type: "function", value: fn(...args: [VMValue]) -> VMValue {
+      for arg in args {
+        // print logic
+      }
+      return { type: "nil", value: nil }
+    }}
+    self.globals["type_of"] = { type: "function", value: fn(v: VMValue) -> VMValue {
+      return { type: "string", value: v.type }
+    }}
+    self.globals["assert"] = { type: "function", value: fn(cond: VMValue, msg: VMValue | nil) -> VMValue {
+      if !self.asBool(cond) {
+        if msg != nil {
+          panic("Assertion failed: " + (msg.value as string))
+        } else {
+          panic("Assertion failed")
+        }
+      }
+      return { type: "nil", value: nil }
+    }}
+  }
+
+  pub fn execute(self, bytecode: [number]) -> VMValue {
+    self.loadBytecode(bytecode)
+
+    while self.pc < self.code.length {
+      let inst = self.fetch()
+      let op = inst & 0x3F
+      let a = (inst >> 6) & 0xFF
+      let b = (inst >> 14) & 0x1FF
+      let c = (inst >> 23) & 0x1FF
+      let bx = (inst >> 14) & 0x3FFFF
+      let sbx = bx
+      if bx >= 0x20000 {
+        sbx = bx - 0x40000
+      }
+
+      match op {
+        OpCode.NOP => {}
+        OpCode.LOADK => self.setReg(a, self.constants[bx])
+        OpCode.LOADNIL => self.setReg(a, { type: "nil", value: nil })
+        OpCode.LOADBOOL => {
+          self.setReg(a, { type: "bool", value: b != 0 })
+          if c != 0 {
+            self.pc = self.pc + 4
+          }
+        }
+        OpCode.LOADINT => self.setReg(a, { type: "number", value: sbx })
+        OpCode.MOVE => self.setReg(a, self.getReg(b))
+        OpCode.GETGLOBAL => {
+          let name = self.constants[bx].value as string
+          let val = self.globals[name]
+          if val != nil {
+            self.setReg(a, val)
+          } else {
+            self.setReg(a, { type: "nil", value: nil })
+          }
+        }
+        OpCode.SETGLOBAL => {
+          let name = self.constants[bx].value as string
+          self.globals[name] = self.getReg(a)
+        }
+        OpCode.GETUPVAL => self.setReg(a, { type: "nil", value: nil })
+        OpCode.SETUPVAL => {}
+        OpCode.GETTABLE => {
+          let tbl = self.getReg(b)
+          let key = self.getRK(c)
+          if tbl.type == "table" {
+            let t = tbl.value as {string: VMValue}
+            let k = self.asString(key)
+            let val = t[k]
+            if val != nil {
+              self.setReg(a, val)
+            } else {
+              self.setReg(a, { type: "nil", value: nil })
+            }
+          } else {
+            self.setReg(a, { type: "nil", value: nil })
+          }
+        }
+        OpCode.SETTABLE => {
+          let tbl = self.getReg(a)
+          let key = self.getRK(b)
+          let val = self.getRK(c)
+          if tbl.type == "table" {
+            let t = tbl.value as {string: VMValue}
+            t[self.asString(key)] = val
+          }
+        }
+        OpCode.NEWTABLE => self.setReg(a, { type: "table", value: {} })
+        OpCode.ADD => {
+          let left = self.asNumber(self.getReg(b))
+          let right = self.asNumber(self.getReg(c))
+          self.setReg(a, { type: "number", value: left + right })
+        }
+        OpCode.SUB => {
+          let left = self.asNumber(self.getReg(b))
+          let right = self.asNumber(self.getReg(c))
+          self.setReg(a, { type: "number", value: left - right })
+        }
+        OpCode.MUL => {
+          let left = self.asNumber(self.getReg(b))
+          let right = self.asNumber(self.getReg(c))
+          self.setReg(a, { type: "number", value: left * right })
+        }
+        OpCode.DIV => {
+          let left = self.asNumber(self.getReg(b))
+          let right = self.asNumber(self.getReg(c))
+          if right == 0 {
+            panic("Division by zero")
+          }
+          self.setReg(a, { type: "number", value: left / right })
+        }
+        OpCode.MOD => {
+          let left = self.asNumber(self.getReg(b))
+          let right = self.asNumber(self.getReg(c))
+          self.setReg(a, { type: "number", value: left % right })
+        }
+        OpCode.POW => {
+          let left = self.asNumber(self.getReg(b))
+          let right = self.asNumber(self.getReg(c))
+          self.setReg(a, { type: "number", value: left ** right })
+        }
+        OpCode.UNM => {
+          let val = self.asNumber(self.getReg(b))
+          self.setReg(a, { type: "number", value: -val })
+        }
+        OpCode.NOT => {
+          let val = self.asBool(self.getReg(b))
+          self.setReg(a, { type: "bool", value: !val })
+        }
+        OpCode.LEN => {
+          let val = self.getReg(b)
+          if val.type == "string" {
+            let s = val.value as string
+            self.setReg(a, { type: "number", value: s.length })
+          } else if val.type == "table" {
+            let t = val.value as {string: VMValue}
+            let count = 0
+            for k in t {
+              count = count + 1
+            }
+            self.setReg(a, { type: "number", value: count })
+          } else {
+            self.setReg(a, { type: "number", value: 0 })
+          }
+        }
+        OpCode.CONCAT => {
+          let result = ""
+          for i in b..c {
+            result = result + self.asString(self.getReg(i))
+          }
+          self.setReg(a, { type: "string", value: result })
+        }
+        OpCode.JMP => self.pc = self.pc + sbx * 4
+        OpCode.EQ => {
+          let left = self.getReg(b)
+          let right = self.getReg(c)
+          let eq = left.type == right.type && left.value == right.value
+          if eq != (a != 0) {
+            self.pc = self.pc + 4
+          }
+        }
+        OpCode.LT => {
+          let left = self.asNumber(self.getReg(b))
+          let right = self.asNumber(self.getReg(c))
+          if (left < right) != (a != 0) {
+            self.pc = self.pc + 4
+          }
+        }
+        OpCode.LE => {
+          let left = self.asNumber(self.getReg(b))
+          let right = self.asNumber(self.getReg(c))
+          if (left <= right) != (a != 0) {
+            self.pc = self.pc + 4
+          }
+        }
+        OpCode.TEST => {
+          let val = self.asBool(self.getReg(a))
+          if val != (c != 0) {
+            self.pc = self.pc + 4
+          }
+        }
+        OpCode.TESTSET => {
+          let val = self.getReg(b)
+          if self.asBool(val) == (c != 0) {
+            self.setReg(a, val)
+          } else {
+            self.pc = self.pc + 4
+          }
+        }
+        OpCode.CALL => {
+          let func = self.getReg(a)
+          let nargs = b - 1
+          let nresults = c - 1
+          if func.type == "function" {
+            let f = func.value as fn(...[VMValue]) -> VMValue
+            let args: [VMValue] = []
+            for i in 0..nargs {
+              args.push(self.getReg(a + 1 + i))
+            }
+            let result = f(...args)
+            if result == nil {
+              result = { type: "nil", value: nil }
+            }
+            self.setReg(a, result)
+          } else {
+            self.setReg(a, { type: "nil", value: nil })
+          }
+        }
+        OpCode.TAILCALL => {
+          let func = self.getReg(a)
+          let nargs = b - 1
+          if func.type == "function" {
+            let f = func.value as fn(...[VMValue]) -> VMValue
+            let args: [VMValue] = []
+            for i in 0..nargs {
+              args.push(self.getReg(a + 1 + i))
+            }
+            let result = f(...args)
+            if result == nil {
+              return { type: "nil", value: nil }
+            }
+            return result
+          }
+          return { type: "nil", value: nil }
+        }
+        OpCode.RETURN => {
+          if b == 0 {
+            return self.getReg(a)
+          }
+          if b == 1 {
+            return { type: "nil", value: nil }
+          }
+          return self.getReg(a)
+        }
+        OpCode.CLOSURE => {
+          let proto = self.protos[bx]
+          if proto != nil {
+            let closure = { type: "function", value: fn(...args: [VMValue]) -> VMValue {
+              return { type: "nil", value: nil }
+            }}
+            self.setReg(a, closure)
+          } else {
+            self.setReg(a, { type: "function", value: fn() -> VMValue {
+              return { type: "nil", value: nil }
+            }})
+          }
+        }
+        OpCode.FORLOOP => {
+          let idx = self.asNumber(self.getReg(a)) + self.asNumber(self.getReg(a + 2))
+          self.setReg(a, { type: "number", value: idx })
+          let limit = self.asNumber(self.getReg(a + 1))
+          let step = self.asNumber(self.getReg(a + 2))
+          if (step > 0 && idx <= limit) || (step < 0 && idx >= limit) {
+            self.pc = self.pc + sbx * 4
+            self.setReg(a + 3, { type: "number", value: idx })
+          }
+        }
+        OpCode.FORPREP => {
+          let init = self.asNumber(self.getReg(a))
+          let step = self.asNumber(self.getReg(a + 2))
+          self.setReg(a, { type: "number", value: init - step })
+          self.pc = self.pc + sbx * 4
+        }
+        OpCode.TYPECHECK => self.setReg(a, { type: "bool", value: true })
+        OpCode.AWAIT => self.setReg(a, self.getReg(b))
+        OpCode.GUARD => {
+          let cond = self.asBool(self.getReg(a))
+          if !cond {
+            self.pc = self.pc + sbx * 4
+          }
+        }
+        OpCode.DEFER => {}
+        OpCode.SETLIST => {
+          let tbl = self.getReg(a)
+          if tbl.type == "table" {
+            let t = tbl.value as {string: VMValue}
+            let start = (c - 1) * 50 + 1
+            for i in 1..b {
+              t[(start + i - 1) as string] = self.getReg(a + i)
+            }
+          }
+        }
+        OpCode.VARARG => {
+          for i in 0..(b - 1) {
+            self.setReg(a + i, { type: "nil", value: nil })
+          }
+        }
+        OpCode.CLOSE => {}
+        _ => {}
+      }
+    }
+
+    if self.stack.length > 0 {
+      return self.stack[self.stack.length - 1]
+    }
+    return { type: "nil", value: nil }
+  }
+
+  fn loadBytecode(self, bytecode: [number]) {
+    let offset = 0
+    let magic = self.readUint32(bytecode, offset)
+    offset = offset + 4
+    let version = bytecode[offset]
+    offset = offset + 1
+    let flags = bytecode[offset]
+    offset = offset + 1
+    let constCount = self.readUint16(bytecode, offset)
+    offset = offset + 2
+    let protoCount = self.readUint16(bytecode, offset)
+    offset = offset + 2
+    let codeSize = self.readUint32(bytecode, offset)
+    offset = offset + 4
+
+    self.constants = []
+    for i in 0..constCount {
+      let type = bytecode[offset]
+      offset = offset + 1
+      match type {
+        0 => self.constants.push({ type: "nil", value: nil })
+        1 => {
+          let n = self.readFloat64(bytecode, offset)
+          offset = offset + 8
+          self.constants.push({ type: "number", value: n })
+        }
+        2 => self.constants.push({ type: "bool", value: true })
+        3 => {
+          let len = self.readUint32(bytecode, offset)
+          offset = offset + 4
+          let str = ""
+          for j in 0..len {
+            str = str + (bytecode[offset] as string)
+            offset = offset + 1
+          }
+          self.constants.push({ type: "string", value: str })
+        }
+      }
+    }
+
+    let protoOffsets: [number] = []
+    let protoSizes: [number] = []
+    for i in 0..protoCount {
+      protoOffsets.push(self.readUint32(bytecode, offset))
+      offset = offset + 4
+      protoSizes.push(self.readUint32(bytecode, offset))
+      offset = offset + 4
+    }
+
+    self.protos = []
+    for i in 0..protoCount {
+      let pOffset = protoOffsets[i]
+      let pConsts = self.readUint32(bytecode, pOffset)
+      pOffset = pOffset + 4
+      let pInsts = self.readUint32(bytecode, pOffset)
+      pOffset = pOffset + 4
+      let pUpvals = self.readUint32(bytecode, pOffset)
+      pOffset = pOffset + 4
+      let pParams = self.readUint32(bytecode, pOffset)
+      pOffset = pOffset + 4
+
+      let protoConstants: [VMValue] = []
+      for j in 0..pConsts {
+        let t = bytecode[pOffset]
+        pOffset = pOffset + 1
+        match t {
+          0 => protoConstants.push({ type: "nil", value: nil })
+          1 => {
+            let n = self.readFloat64(bytecode, pOffset)
+            pOffset = pOffset + 8
+            protoConstants.push({ type: "number", value: n })
+          }
+          2 => protoConstants.push({ type: "bool", value: true })
+          3 => {
+            let slen = self.readUint32(bytecode, pOffset)
+            pOffset = pOffset + 4
+            let sstr = ""
+            for k in 0..slen {
+              sstr = sstr + (bytecode[pOffset] as string)
+              pOffset = pOffset + 1
+            }
+            protoConstants.push({ type: "string", value: sstr })
+          }
+        }
+      }
+
+      let instBytes: [number] = []
+      for j in 0..(pInsts * 4) {
+        instBytes.push(bytecode[pOffset + j])
+      }
+      pOffset = pOffset + pInsts * 4
+      pOffset = pOffset + pInsts * 4
+
+      let upvalues: [UpvalueInfo] = []
+      for j in 0..pUpvals {
+        let idx = self.readUint16(bytecode, pOffset)
+        pOffset = pOffset + 2
+        let isLocal = bytecode[pOffset] == 1
+        pOffset = pOffset + 1
+        let nameLen = bytecode[pOffset]
+        pOffset = pOffset + 1
+        let name = ""
+        for k in 0..nameLen {
+          name = name + (bytecode[pOffset] as string)
+          pOffset = pOffset + 1
+        }
+        upvalues.push({ name: name, index: idx, isLocal: isLocal })
+      }
+
+      self.protos.push({
+        constants: protoConstants,
+        instructions: instBytes,
+        upvalues: upvalues,
+        params: pParams,
+        locals: [],
+        lineInfo: [],
+      })
+    }
+
+    self.code = []
+    for i in 0..codeSize {
+      self.code.push(bytecode[offset + i])
+    }
+    self.pc = 0
+    self.stack = []
+    for i in 0..256 {
+      self.stack.push({ type: "nil", value: nil })
+    }
+    self.fp = 0
+    self.callStack = []
+    self.frameStack = []
+  }
+
+  fn fetch(self) -> number {
+    let inst = self.readUint32(self.code, self.pc)
+    self.pc = self.pc + 4
+    return inst
+  }
+
+  fn getReg(self, idx: number) -> VMValue {
+    let reg = self.stack[self.fp + idx]
+    if reg != nil {
+      return reg
+    }
+    return { type: "nil", value: nil }
+  }
+
+  fn setReg(self, idx: number, val: VMValue) {
+    self.stack[self.fp + idx] = val
+  }
+
+  fn getRK(self, idx: number) -> VMValue {
+    if idx >= 256 {
+      return self.constants[idx - 256]
+    }
+    return self.getReg(idx)
+  }
+
+  fn asBool(self, val: VMValue) -> bool {
+    if val.type == "nil" {
+      return false
+    }
+    if val.type == "bool" {
+      return val.value as bool
+    }
+    if val.type == "number" {
+      return (val.value as number) != 0
+    }
+    return true
+  }
+
+  fn asNumber(self, val: VMValue) -> number {
+    if val.type == "number" {
+      return val.value as number
+    }
+    if val.type == "string" {
+      return (val.value as string) as number
+    }
+    return 0
+  }
+
+  fn asString(self, val: VMValue) -> string {
+    if val.type == "string" {
+      return val.value as string
+    }
+    if val.type == "number" {
+      return (val.value as number) as string
+    }
+    if val.type == "nil" {
+      return "nil"
+    }
+    if val.type == "bool" {
+      if val.value as bool {
+        return "true"
+      }
+      return "false"
+    }
+    return "[object]"
+  }
+
+  fn readUint32(self, data: [number], offset: number) -> number {
+    return data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24)
+  }
+
+  fn readUint16(self, data: [number], offset: number) -> number {
+    return data[offset] | (data[offset + 1] << 8)
+  }
+
+  fn readFloat64(self, data: [number], offset: number) -> number {
+    // Simplified - just return 0 for now
+    return 0
+  }
+
+  pub fn getStats(self) -> VMStats {
+    return self.stats
+  }
+
+  pub fn setGlobal(self, name: string, value: VMValue) {
+    self.globals[name] = value
+  }
+
+  pub fn getGlobal(self, name: string) -> VMValue | nil {
+    return self.globals[name]
+  }
+}
+
+pub fn run(source: string) -> VMValue {
+  let vm = VM.new(nil)
+  // Parse and compile source, then execute
+  // This is a placeholder - actual implementation would parse source to AST, emit bytecode, then execute
+  return { type: "nil", value: nil }
+    }
