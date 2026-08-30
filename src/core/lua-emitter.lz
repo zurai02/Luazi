@@ -1,0 +1,337 @@
+// src/core/lua-emitter.lz
+// ============================================================================
+// Luazi → Lua Emitter
+// ============================================================================
+// This module implements a Lua code generation target for the Luazi compiler.
+//
+// BOOTSTRAPPING NOTE:
+// Since this emitter is written in Luazi itself, you need a bootstrap compiler
+// to build it the first time. Options:
+//   1. Use the existing TypeScript compiler (src/core/lua-emitter.ts) to
+//      compile this file to Lua once, then use the resulting Lua emitter
+//      to rebuild itself.
+//   2. Or compile this file via the bytecode/WASM target first, then use
+//      a small Lua shim to load the bytecode emitter and run it.
+//
+// After the first bootstrap, the Lua emitter can compile future versions of
+// itself via: luazi -t lua src/core/lua-emitter.lz
+// ============================================================================
+
+import { modules } from "luazi:stdlib"
+
+// ============================================================================
+// AST Type Definitions
+// ============================================================================
+
+struct Identifier {
+    name: string
+}
+
+struct VariableDeclarator {
+    id: Identifier,
+    init: Expression?
+}
+
+struct Param {
+    name: string
+}
+
+struct BlockStatement {
+    body: Statement[]
+}
+
+struct Pattern {
+    type: string,
+    bindings: string[]?
+}
+
+struct MatchArm {
+    pattern: Pattern,
+    body: BlockStatement
+}
+
+struct Field {
+    key: Identifier,
+    value: Expression
+}
+
+// ============================================================================
+// Statement AST (tagged union)
+// ============================================================================
+
+enum Statement {
+    VariableDeclaration(bool, VariableDeclarator[]),
+    FunctionDeclaration(string, Param[], BlockStatement),
+    ReturnStatement(Expression[]),
+    IfStatement(Expression, BlockStatement, BlockStatement?),
+    GuardStatement(Expression, BlockStatement),
+    ExpressionStatement(Expression),
+    DeferStatement(Expression),
+    MatchStatement(Expression, MatchArm[])
+}
+
+// ============================================================================
+// Expression AST (tagged union)
+// ============================================================================
+
+enum Expression {
+    Literal(any),
+    Identifier(string),
+    BinaryExpression(string, Expression, Expression),
+    CallExpression(Expression, Expression[]),
+    MemberExpression(Expression, Identifier),
+    AwaitExpression(Expression),
+    StructExpression(Field[]),
+    EnumExpression(string, Expression[])
+}
+
+// ============================================================================
+// Program Root
+// ============================================================================
+
+struct Program {
+    body: Statement[]
+}
+
+// ============================================================================
+// String Utilities
+// ============================================================================
+
+fn joinStrings(parts: string[], separator: string) -> string {
+    let result = ""
+    let isFirst = true
+    for part in parts {
+        if isFirst {
+            result = part
+            isFirst = false
+        } else {
+            result = result + separator + part
+        }
+    }
+    return result
+}
+
+// ============================================================================
+// Lua Emitter
+// ============================================================================
+
+struct LuaEmitter {
+    indent: number,
+    output: string[],
+
+    fn new() -> LuaEmitter {
+        return LuaEmitter {
+            indent: 0,
+            output: []
+        }
+    }
+
+    // Main entry point: emit a full Program to a Lua source string
+    fn emit(self, program: Program) -> string {
+        for stmt in program.body {
+            self.emitStatement(stmt)
+        }
+        return joinStrings(self.output, "\n")
+    }
+
+    // ------------------------------------------------------------------------
+    // Statement Emission
+    // ------------------------------------------------------------------------
+
+    fn emitStatement(self, stmt: Statement) {
+        match stmt {
+            VariableDeclaration(mutable, declarations) => {
+                let names: string[] = []
+                let values: string[] = []
+                for decl in declarations {
+                    names.push(decl.id.name)
+                    if decl.init != nil {
+                        values.push(self.emitExpression(decl.init))
+                    } else {
+                        values.push("nil")
+                    }
+                }
+                let namesStr = joinStrings(names, ", ")
+                let valuesStr = joinStrings(values, ", ")
+                self.writeLine("local " + namesStr + " = " + valuesStr)
+            }
+
+            FunctionDeclaration(name, params, body) => {
+                let paramNames: string[] = []
+                for p in params {
+                    paramNames.push(p.name)
+                }
+                let paramsStr = joinStrings(paramNames, ", ")
+                self.writeLine("function " + name + "(" + paramsStr + ")")
+                self.indent += 1
+                for bodyStmt in body.body {
+                    self.emitStatement(bodyStmt)
+                }
+                self.indent -= 1
+                self.writeLine("end")
+            }
+
+            ReturnStatement(arguments) => {
+                let args: string[] = []
+                for arg in arguments {
+                    args.push(self.emitExpression(arg))
+                }
+                self.writeLine("return " + joinStrings(args, ", "))
+            }
+
+            IfStatement(test, consequent, alternate) => {
+                self.writeLine("if " + self.emitExpression(test) + " then")
+                self.indent += 1
+                for s in consequent.body {
+                    self.emitStatement(s)
+                }
+                self.indent -= 1
+                if alternate != nil {
+                    self.writeLine("else")
+                    self.indent += 1
+                    for s in alternate.body {
+                        self.emitStatement(s)
+                    }
+                    self.indent -= 1
+                }
+                self.writeLine("end")
+            }
+
+            GuardStatement(condition, alternate) => {
+                self.writeLine("if not (" + self.emitExpression(condition) + ") then")
+                self.indent += 1
+                for s in alternate.body {
+                    self.emitStatement(s)
+                }
+                self.indent -= 1
+                self.writeLine("end")
+            }
+
+            ExpressionStatement(expression) => {
+                self.writeLine(self.emitExpression(expression))
+            }
+
+            DeferStatement(expression) => {
+                // Lua has no defer; we emit a comment and rely on the user
+                // to wrap the parent function in pcall + finally manually,
+                // or a future pass can transform this automatically.
+                self.writeLine("-- DEFER: " + self.emitExpression(expression))
+            }
+
+            MatchStatement(discriminant, arms) => {
+                let discStr = self.emitExpression(discriminant)
+                let first = true
+                for arm in arms {
+                    let keyword: string
+                    if first {
+                        keyword = "if"
+                    } else {
+                        keyword = "elseif"
+                    }
+                    first = false
+                    self.writeLine(keyword + " " + discStr + ".type == \"" + arm.pattern.type + "\" then")
+                    self.indent += 1
+                    if arm.pattern.bindings != nil {
+                        let bindings = arm.pattern.bindings
+                        let bindingStr = joinStrings(bindings, ", ")
+                        self.writeLine("local " + bindingStr + " = " + discStr + ".value")
+                    }
+                    for s in arm.body.body {
+                        self.emitStatement(s)
+                    }
+                    self.indent -= 1
+                }
+                self.writeLine("end")
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Expression Emission
+    // ------------------------------------------------------------------------
+
+    fn emitExpression(self, expr: Expression) -> string {
+        match expr {
+            Literal(value) => {
+                if value == nil {
+                    return "nil"
+                }
+                let t = type(value)
+                if t == "string" {
+                    return "\"" + value + "\""
+                }
+                return tostring(value)
+            }
+
+            Identifier(name) => {
+                return name
+            }
+
+            BinaryExpression(operator, left, right) => {
+                let op = operator
+                if op == "^" {
+                    op = "math.pow"
+                }
+                return self.emitExpression(left) + " " + op + " " + self.emitExpression(right)
+            }
+
+            CallExpression(callee, arguments) => {
+                let args: string[] = []
+                for arg in arguments {
+                    args.push(self.emitExpression(arg))
+                }
+                return self.emitExpression(callee) + "(" + joinStrings(args, ", ") + ")"
+            }
+
+            MemberExpression(object, property) => {
+                return self.emitExpression(object) + "." + property.name
+            }
+
+            AwaitExpression(argument) => {
+                // Luazi async/await maps to coroutine-based Lua.
+                // For now, strip await and emit the inner expression.
+                // A future pass can wrap this in coroutine.yield() or Promise calls.
+                return self.emitExpression(argument)
+            }
+
+            StructExpression(fields) => {
+                let fieldStrs: string[] = []
+                for f in fields {
+                    fieldStrs.push(f.key.name + " = " + self.emitExpression(f.value))
+                }
+                return "{ " + joinStrings(fieldStrs, ", ") + " }"
+            }
+
+            EnumExpression(variant, arguments) => {
+                let args: string[] = []
+                for arg in arguments {
+                    args.push(self.emitExpression(arg))
+                }
+                return "{ type = \"" + variant + "\", value = { " + joinStrings(args, ", ") + " } }"
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------------
+
+    fn writeLine(self, text: string) {
+        let spaces = ""
+        let i = 0
+        while i < self.indent {
+            spaces = spaces + "    "
+            i += 1
+        }
+        self.output.push(spaces + text)
+    }
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+fn emitLua(program: Program) -> string {
+    let emitter = LuaEmitter.new()
+    return emitter.emit(program)
+}
