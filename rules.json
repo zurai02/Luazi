@@ -1,0 +1,22 @@
+{
+  "selfHosted": true,
+  "bootstrap": {
+    "entry": "src/cli/cli.lz",
+    "compiler": "dist/cli/cli.js",
+    "stage": 2
+  },
+  "build": {
+    "targets": ["bytecode", "c", "wat"],
+    "output": "bin/luazi",
+    "optimize": true,
+    "selfCompile": true
+  },
+  "language": {
+    "ownership": true,
+    "borrowCheck": true,
+    "patternMatching": true,
+    "traits": true,
+    "async": true,
+    "simd": true
+  }
+  }
