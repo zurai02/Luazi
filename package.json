@@ -11,7 +11,7 @@
   "scripts": {
     "build": "npm run build:ts && npm run build:wasm && npm run build:native && npm run build:cs",
     "build:ts": "tsc",
-    "build:wasm": "emcc src/runtime/cpp/*.cpp -O3 -s WASM=1 -s EXPORT_ES6=1 -s MODULARIZE=1 -s EXPORT_NAME=LuaziRuntime -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=64MB -s MAXIMUM_MEMORY=512MB -s EXPORTED_FUNCTIONS='["_malloc","_free","_lz_createVM","_lz_destroyVM","_lz_execute","_lz_callFunction","_lz_getGlobal","_lz_setGlobal","_lz_collectGarbage","_lz_getMemoryStats"]' -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","UTF8ToString","stringToUTF8","lengthBytesUTF8"]' -o dist/luazi.wasm.js",
+    "build:wasm": "emcc src/runtime/cpp/*.cpp -O3 -s WASM=1 -s EXPORT_ES6=1 -s MODULARIZE=1 -s EXPORT_NAME=LuaziRuntime -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=64MB -s MAXIMUM_MEMORY=512MB -s EXPORTED_FUNCTIONS='[\"_malloc\",\"_free\",\"_lz_createVM\",\"_lz_destroyVM\",\"_lz_execute\",\"_lz_callFunction\",\"_lz_getGlobal\",\"_lz_setGlobal\",\"_lz_collectGarbage\",\"_lz_getMemoryStats\"]' -s EXPORTED_RUNTIME_METHODS='[\"ccall\",\"cwrap\",\"UTF8ToString\",\"stringToUTF8\",\"lengthBytesUTF8\"]' -o dist/luazi.wasm.js",
     "build:native": "g++ -std=c++20 -O3 -flto -march=native -DNDEBUG src/runtime/cpp/*.cpp -o dist/luazi-native",
     "build:cs": "dotnet build Luazi.sln -c Release",
     "build:cs:debug": "dotnet build Luazi.sln -c Debug",
@@ -26,9 +26,22 @@
     "clean": "rm -rf dist/ && dotnet clean Luazi.sln"
   },
   "keywords": [
-    "luazi", "lua", "luau", "scripting", "language", "compiler",
-    "webassembly", "wasm", "performance", "game-development", "embedded",
-    "csharp", "dotnet", "typescript", "simd", "arena-allocator"
+    "luazi",
+    "lua",
+    "luau",
+    "scripting",
+    "language",
+    "compiler",
+    "webassembly",
+    "wasm",
+    "performance",
+    "game-development",
+    "embedded",
+    "csharp",
+    "dotnet",
+    "typescript",
+    "simd",
+    "arena-allocator"
   ],
   "author": "zurai02 <lol066351>",
   "license": "MIT",
