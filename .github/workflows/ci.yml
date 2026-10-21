@@ -14,10 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
+
       - run: npm ci
       - run: npm run build:ts
       - run: npm run test:ts
@@ -27,9 +29,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: mymindstorm/setup-emsdk@v14
         with:
           version: 3.1.50
+
       - run: emcc -v
       - run: npm run build:wasm
 
@@ -63,9 +67,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+
       - run: dotnet restore Luazi.sln
       - run: dotnet build Luazi.sln -c Release
       - run: dotnet test
