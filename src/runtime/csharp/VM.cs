@@ -18,15 +18,15 @@ public struct LzValue
     [FieldOffset(0)] public LzType Tag;
     [FieldOffset(8)] public double Number;
     [FieldOffset(8)] public ulong Bits;
-    [FieldOffset(8)] public nint Pointer; // Object reference
+    [FieldOffset(8)] public nint Pointer; // GCHandle pointer to managed object
 
     public static LzValue Nil => new() { Tag = LzType.Nil };
     public static LzValue Bool(bool v) => new() { Tag = LzType.Bool, Bits = v ? 1UL : 0UL };
     public static LzValue Num(double v) => new() { Tag = LzType.Number, Number = v };
-    public static LzValue Str(LzString v) => new() { Tag = LzType.String, Pointer = v.Handle };
-    public static LzValue Obj(LzObject v) => new() { Tag = LzType.Object, Pointer = v.Handle };
-    public static LzValue Fn(LzFunction v) => new() { Tag = LzType.Function, Pointer = v.Handle };
-    public static LzValue Tbl(LzTable v) => new() { Tag = LzType.Table, Pointer = v.Handle };
+    public static LzValue Str(LzString v) => new() { Tag = LzType.String, Pointer = v != null ? v.Handle : 0 };
+    public static LzValue Obj(LzObject v) => new() { Tag = LzType.Object, Pointer = v != null ? v.Handle : 0 };
+    public static LzValue Fn(LzFunction v) => new() { Tag = LzType.Function, Pointer = v != null ? v.Handle : 0 };
+    public static LzValue Tbl(LzTable v) => new() { Tag = LzType.Table, Pointer = v != null ? v.Handle : 0 };
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool IsNil() => Tag == LzType.Nil;
@@ -57,11 +57,17 @@ public struct LzValue
     {
         if (Tag == LzType.String)
         {
-            unsafe
+            if (Pointer == 0) return string.Empty;
+            try
             {
-                return new string((sbyte*)Pointer);
+                return GCHandle.FromIntPtr(Pointer).Target as string ?? string.Empty;
+            }
+            catch (InvalidOperationException)
+            {
+                return string.Empty;
             }
         }
+
         if (Tag == LzType.Number) return Number.ToString();
         if (Tag == LzType.Nil) return "nil";
         if (Tag == LzType.Bool) return Bits != 0 ? "true" : "false";
@@ -139,10 +145,17 @@ public sealed unsafe class ArenaAllocator : IDisposable
         nuint newSize = Math.Max(_capacity * 2, minimum);
         newSize = Math.Max(newSize, (nuint)PageSize);
         byte* newBase = (byte*)NativeMemory.AlignedAlloc(newSize, 64);
-        Buffer.MemoryCopy(_base, newBase, (long)_offset, (long)_offset);
-        NativeMemory.AlignedFree(_base);
+        Buffer.MemoryCopy(_base, newBase, (long)newSize, (long)_offset);
+
+        var oldBase = _base;
         _base = newBase;
         _capacity = newSize;
+        _pages.Add((nint)_base);
+
+        if (oldBase != null)
+        {
+            NativeMemory.AlignedFree(oldBase);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -186,6 +199,19 @@ public sealed class LzVM
         _constants = new LzValue[constPool];
         _arena = new ArenaAllocator();
         _dispatch = BuildDispatchTable();
+    }
+
+    private static TObject? ResolveHandle<TObject>(nint handle) where TObject : class
+    {
+        if (handle == 0) return null;
+        try
+        {
+            return GCHandle.FromIntPtr(handle).Target as TObject;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     private Action[] BuildDispatchTable()
@@ -252,7 +278,8 @@ public sealed class LzVM
                     offset += 4;
                     string str = System.Text.Encoding.UTF8.GetString(bytecode, offset, len);
                     offset += len;
-                    _constants[i] = LzValue.Str(new LzString { Handle = (nint)GCHandle.ToIntPtr(GCHandle.Alloc(str)) });
+                    var handle = GCHandle.Alloc(str);
+                    _constants[i] = new LzValue { Tag = LzType.String, Pointer = GCHandle.ToIntPtr(handle) };
                     break;
             }
         }
@@ -403,12 +430,9 @@ public sealed class LzVM
         var table = GetReg(tbl);
         if (table.IsTable())
         {
-            unsafe
-            {
-                var t = (LzTable*)table.Pointer;
-                string k = GetRK(key).AsString();
-                SetReg(dst, t->Data.TryGetValue(k, out var v) ? v : LzValue.Nil);
-            }
+            var t = ResolveHandle<LzTable>(table.Pointer);
+            string k = GetRK(key).AsString();
+            SetReg(dst, t != null && t.Data.TryGetValue(k, out var v) ? v : LzValue.Nil);
         }
         else
         {
@@ -424,11 +448,11 @@ public sealed class LzVM
         var table = GetReg(tbl);
         if (table.IsTable())
         {
-            unsafe
+            var t = ResolveHandle<LzTable>(table.Pointer);
+            if (t != null)
             {
-                var t = (LzTable*)table.Pointer;
                 string k = GetRK(key).AsString();
-                t->Data[k] = GetRK(val);
+                t.Data[k] = GetRK(val);
             }
         }
     }
@@ -437,11 +461,8 @@ public sealed class LzVM
     {
         byte dst = NextByte();
         var tbl = new LzTable();
+        tbl.Handle = GCHandle.ToIntPtr(GCHandle.Alloc(tbl));
         _tables.Add(tbl);
-        unsafe
-        {
-            tbl.Handle = (nint)GCHandle.ToIntPtr(GCHandle.Alloc(tbl));
-        }
         SetReg(dst, LzValue.Tbl(tbl));
     }
 
@@ -532,11 +553,8 @@ public sealed class LzVM
         }
         else if (val.IsTable())
         {
-            unsafe
-            {
-                var t = (LzTable*)val.Pointer;
-                SetReg(dst, LzValue.Num(t->Count));
-            }
+            var t = ResolveHandle<LzTable>(val.Pointer);
+            SetReg(dst, LzValue.Num(t != null ? t.Count : 0));
         }
         else
         {
@@ -554,7 +572,9 @@ public sealed class LzVM
         {
             result += GetReg((byte)i).AsString();
         }
-        SetReg(dst, LzValue.Str(new LzString { Handle = (nint)GCHandle.ToIntPtr(GCHandle.Alloc(result)) }));
+
+        var s = new LzString { Handle = GCHandle.ToIntPtr(GCHandle.Alloc(result)) };
+        SetReg(dst, LzValue.Str(s));
     }
 
     private void OpJmp()

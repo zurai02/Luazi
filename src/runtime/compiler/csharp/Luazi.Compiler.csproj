@@ -11,8 +11,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..
-untime\csharp\Luazi.Runtime.csproj" />
+    <ProjectReference Include="..\..\csharp\Luazi.Runtime.csproj" />
   </ItemGroup>
 
   <ItemGroup>

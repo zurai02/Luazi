@@ -1,7 +1,3 @@
-// Luazi C++ Runtime Header
-// Optimized for WASM compilation with Emscripten
-// Zero-cost abstractions, cache-friendly data layouts
-
 #ifndef LUAZI_VM_H
 #define LUAZI_VM_H
 
@@ -107,6 +103,7 @@ public:
         }
     }
 
+    LZ_INLINE uint64_t as_bits() const noexcept { return bits; }
     LZ_INLINE bool is_nil() const noexcept     { return bits == LZ_TAG_NIL; }
     LZ_INLINE bool is_bool() const noexcept    { return bits == LZ_TAG_FALSE || bits == LZ_TAG_TRUE; }
     LZ_INLINE bool is_number() const noexcept  { return !is_nan_boxed(); }
@@ -281,6 +278,8 @@ public:
         }
     }
 
+    LZ_INLINE size_t size() const noexcept { return count; }
+
     LZ_INLINE V* get(const K& key) noexcept {
         size_t idx = hash(key) & (capacity - 1);
         uint8_t dist = 0;
@@ -355,6 +354,7 @@ private:
         entries = reinterpret_cast<Entry*>(arena.alloc(sizeof(Entry) * capacity));
         for (size_t i = 0; i < capacity; i++) {
             entries[i].occupied = false;
+            entries[i].dist = 0;
         }
         count = 0;
 
@@ -366,7 +366,7 @@ private:
     }
 
     static size_t hash(const Value& v) noexcept {
-        return std::hash<uint64_t>{}(v.as_number());
+        return std::hash<uint64_t>{}(v.as_bits());
     }
 
     static size_t hash(const String& s) noexcept {
