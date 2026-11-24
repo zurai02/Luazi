@@ -443,7 +443,7 @@ public class LzParser
         return new AstNode.While(condition, body);
     }
 
-    private AstNode.ParseFor()
+    private AstNode ParseFor()
     {
         Advance(); // for
         string varName = Consume(TokenType.Identifier, "Expected loop variable").Value;
