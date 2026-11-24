@@ -113,7 +113,9 @@ public ref struct LzTokenizer
         var text = _source[start.._pos].ToString();
         var type = text switch
         {
-            "let" or "const" or "var" => TokenType.KeywordVar,
+            "var" => TokenType.KeywordVar,
+            "let" => TokenType.KeywordLet,
+            "const" => TokenType.KeywordConst,
             "fn" or "function" => TokenType.KeywordFn,
             "if" => TokenType.KeywordIf,
             "else" => TokenType.KeywordElse,
@@ -283,7 +285,7 @@ public enum TokenType
     Number, String, Identifier,
 
     // Keywords
-    KeywordVar, KeywordFn, KeywordIf, KeywordElse,
+    KeywordVar, KeywordLet, KeywordConst, KeywordFn, KeywordIf, KeywordElse,
     KeywordWhile, KeywordFor, KeywordIn, KeywordReturn,
     KeywordBreak, KeywordContinue, KeywordMatch,
     KeywordType, KeywordStruct, KeywordEnum, KeywordImpl,
