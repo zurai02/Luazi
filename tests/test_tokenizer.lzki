@@ -1,5 +1,5 @@
-test_tokenizer.lz
-// test_tokenizer.lz - Test suite for the self-hosted tokenizer
+test_tokenizer.lzki
+// test_tokenizer.lzki - Test suite for the self-hosted tokenizer
 import core
 import tokenizer
 

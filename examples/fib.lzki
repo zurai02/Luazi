@@ -1,4 +1,4 @@
-// fib.lz - Fibonacci with memoization and pattern matching
+// fib.lzki - Fibonacci with memoization and pattern matching
 // Demonstrates: enums, pattern matching, memoization, type annotations
 
 import core

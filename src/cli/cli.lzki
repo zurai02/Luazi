@@ -1,4 +1,4 @@
-// cli/cli.lz
+// cli/cli.lzki
 // Main entry point with full Client Dictionary + Backend + Middleware architecture
 
 import * as fs from 'fs'
@@ -267,7 +267,7 @@ async fn cmdCompile(self: LuaziCli, file: string, options: any) -> void {
     }
 
     if result.data?.bytecode {
-      let outputFile = options.output || file.replace(/\.lz$/, self.getExtension(options.target))
+      let outputFile = options.output || file.replace(/\.lzki$/, self.getExtension(options.target))
       fs.writeFileSync(outputFile, result.data.bytecode)
       logger.success(`Compiled to ${outputFile}`)
 
@@ -487,12 +487,12 @@ async fn cmdInit(self: LuaziCli, name: string, options: any) -> void {
     name: name,
     version: '0.1.0',
     description: `A Luazi project`,
-    main: 'src/main.lz',
+    main: 'src/main.lzki',
     scripts: {
-      build: 'luazi compile src/main.lz',
-      run: 'luazi run src/main.lz',
-      test: 'luazi check tests/*.lz',
-      bench: 'luazi bench tests/bench.lz'
+      build: 'luazi compile src/main.lzki',
+      run: 'luazi run src/main.lzki',
+      test: 'luazi check tests/*.lzki',
+      bench: 'luazi bench tests/bench.lzki'
     },
     keywords: ['luazi'],
     license: 'MIT'
@@ -514,15 +514,15 @@ fn main() {
 main()
 `
 
-  fs.writeFileSync(path.join(dir, 'src', 'main.lz'), mainContent)
-  fs.writeFileSync(path.join(dir, '.gitignore'), `*.lzc
+  fs.writeFileSync(path.join(dir, 'src', 'main.lzki'), mainContent)
+  fs.writeFileSync(path.join(dir, '.gitignore'), `*.lzkic
 dist/
 node_modules/
 `)
 
   logger.success(`Created ${name} (${template} template)`)
   print(`  cd ${name}`)
-  print(`  luazi run src/main.lz`)
+  print(`  luazi run src/main.lzki`)
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────
@@ -538,13 +538,13 @@ fn configureLogging(self: LuaziCli, options: any) -> void {
 
 fn getExtension(self: LuaziCli, target: string) -> string {
   let extensions: Record<string, string> = {
-    bytecode: '.lzc',
+    bytecode: '.lzkic',
     wat: '.wat',
     cpp: '.cpp',
     csharp: '.cs',
     js: '.js'
   }
-  return extensions[target] || '.lzc'
+  return extensions[target] || '.lzkic'
 }
 
 fn printDisassembly(self: LuaziCli, data: any, showComments: boolean, showConstants: boolean = true) -> void {

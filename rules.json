@@ -1,7 +1,7 @@
 {
   "selfHosted": true,
   "bootstrap": {
-    "entry": "src/cli/cli.lz",
+    "entry": "src/cli/cli.lzki",
     "compiler": "dist/cli/cli.js",
     "stage": 2
   },

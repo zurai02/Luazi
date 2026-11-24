@@ -1,4 +1,4 @@
-// repl/repl.lz
+// repl/repl.lzki
 // Interactive Read-Eval-Print Loop with history and multi-line support
 
 import { MiddlewareOrchestrator } from '../middleware/middleware'

@@ -1,6 +1,6 @@
-// hello.lz - Your first Luazi program
-// Compile: luazi compile hello.lz
-// Run: luazi run hello.lz
+// hello.lzki - Your first Luazi program
+// Compile: luazi compile hello.lzki
+// Run: luazi run hello.lzki
 
 import core
 import math

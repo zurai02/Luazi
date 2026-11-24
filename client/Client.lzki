@@ -1,4 +1,4 @@
-// client/client.lz
+// client/client.lzki
 // Client Dictionary - Manages client connections, sessions, and request routing
 
 import { ClientInfo, MiddlewareContext, MiddlewareResult, LogLevel } from '../shared/types'

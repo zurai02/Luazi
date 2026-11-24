@@ -1,4 +1,4 @@
-// backend/backend.lz
+// backend/backend.lzki
 // Core compilation, execution, and analysis engine
 
 import * as fs from 'fs'

@@ -1,4 +1,4 @@
-// simd.lz - SIMD vector operations demo
+// simd.lzki - SIMD vector operations demo
 // Demonstrates: SIMD operations, performance comparison
 
 import core

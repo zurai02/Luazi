@@ -1,5 +1,5 @@
-// core.lz - Shared types and utilities for Luazi self-hosted compiler
-// This file is imported by tokenizer.lz, parser.lz, and typechecker.lz
+// core.lzki - Shared types and utilities for Luazi self-hosted compiler
+// This file is imported by tokenizer.lzki, parser.lzki, and typechecker.lzki
 
 // ============================================================================
 // SOURCE LOCATION

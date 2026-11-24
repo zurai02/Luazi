@@ -8,7 +8,7 @@
       "command": "npx",
       "args": [
         "ts-node",
-        "mcp/server.lz"
+        "mcp/server.lzki"
       ],
       "env": {
         "NODE_ENV": "development",
@@ -29,7 +29,7 @@
               "filename": {
                 "type": "string",
                 "description": "Source filename for error reporting",
-                "default": "input.lz"
+                "default": "input.lzki"
               },
               "target": {
                 "type": "string",
@@ -93,7 +93,7 @@
               },
               "filename": {
                 "type": "string",
-                "default": "input.lz",
+                "default": "input.lzki",
                 "description": "Source filename"
               }
             },
@@ -150,7 +150,7 @@
               },
               "filename": {
                 "type": "string",
-                "default": "bench.lz",
+                "default": "bench.lzki",
                 "description": "Source filename"
               },
               "iterations": {
@@ -174,7 +174,7 @@
               },
               "filename": {
                 "type": "string",
-                "default": "input.lz",
+                "default": "input.lzki",
                 "description": "Source filename"
               }
             },
@@ -196,7 +196,7 @@
       "command": "npx",
       "args": [
         "ts-node",
-        "cli/cli.lz"
+        "cli/cli.lzki"
       ],
       "env": {
         "NODE_ENV": "development"
@@ -288,23 +288,23 @@
   "commands": {
     "build": {
       "description": "Build the Luazi project",
-      "command": "npx ts-node cli/cli.lz compile src/main.lz -O2"
+      "command": "npx ts-node cli/cli.lzki compile src/main.lzki -O2"
     },
     "run": {
       "description": "Run the main Luazi program",
-      "command": "npx ts-node cli/cli.lz run src/main.lz"
+      "command": "npx ts-node cli/cli.lzki run src/main.lzki"
     },
     "test": {
       "description": "Run all tests",
-      "command": "npx ts-node cli/cli.lz check tests/*.lz"
+      "command": "npx ts-node cli/cli.lzki check tests/*.lzki"
     },
     "bench": {
       "description": "Run benchmarks",
-      "command": "npx ts-node cli/cli.lz bench tests/bench.lz -n 10000"
+      "command": "npx ts-node cli/cli.lzki bench tests/bench.lzki -n 10000"
     },
     "repl": {
       "description": "Start interactive REPL",
-      "command": "npx ts-node cli/cli.lz repl"
+      "command": "npx ts-node cli/cli.lzki repl"
     }
   }
 }

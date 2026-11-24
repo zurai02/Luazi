@@ -1,4 +1,4 @@
-// src/core/lua-emitter.lz
+// src/core/lua-emitter.lzki
 // ============================================================================
 // Luazi → Lua Emitter
 // ============================================================================
@@ -14,7 +14,7 @@
 //      a small Lua shim to load the bytecode emitter and run it.
 //
 // After the first bootstrap, the Lua emitter can compile future versions of
-// itself via: luazi -t lua src/core/lua-emitter.lz
+// itself via: luazi -t lua src/core/lua-emitter.lzki
 // ============================================================================
 
 import { modules } from "luazi:stdlib"

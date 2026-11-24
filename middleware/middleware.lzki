@@ -1,4 +1,4 @@
-// middleware/middleware.lz
+// middleware/middleware.lzki
 // Communication layer between Client Dictionary and Backend
 
 import { MiddlewareContext, MiddlewareResult, ClientInfo, LogLevel } from '../shared/types'

@@ -94,7 +94,7 @@ void VM::load(const uint8_t* bytecode, size_t len) {
 
   // Load code
   code_size = codeSize / 4;
-  code = arena.construct<Instruction[]>(code_size);
+  code = static_cast<Instruction*>(arena.alloc(sizeof(Instruction) * code_size));
   for (size_t i = 0; i < code_size; i++) {
     code[i].raw = *reinterpret_cast<const uint32_t*>(bytecode + offset + i * 4);
   }
@@ -134,15 +134,13 @@ Value VM::execute() {
         break;
 
       case OpCode::GETGLOBAL: {
-        const String* name = reinterpret_cast<const String*>(constants[i.b()].as_ptr());
-        Value* val = globals.get(name);
+        Value* val = globals.get(constants[i.b()]);
         reg(i.a()) = val ? *val : Value::nil();
         break;
       }
 
       case OpCode::SETGLOBAL: {
-        const String* name = reinterpret_cast<const String*>(constants[i.b()].as_ptr());
-        globals.set(*name, reg(i.a()));
+        globals.set(constants[i.b()], reg(i.a()));
         break;
       }
 
@@ -372,42 +370,73 @@ Value VM::execute() {
 }
 
 // ============================================================================
-// C EXPORT INTERFACE
+// ============================================================================
+// C & WASM EXPORT INTERFACE
 // ============================================================================
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#define LZ_EXPORT EMSCRIPTEN_KEEPALIVE
+#else
+#define LZ_EXPORT
+#endif
+
 extern "C" {
-  luazi::VM* luazi_create_vm() {
+  LZ_EXPORT luazi::VM* lz_createVM() {
     return new luazi::VM();
   }
 
-  void luazi_destroy_vm(luazi::VM* vm) {
+  LZ_EXPORT void lz_destroyVM(luazi::VM* vm) {
     delete vm;
   }
 
-  void luazi_load_bytecode(luazi::VM* vm, const uint8_t* code, size_t len) {
-    vm->load(code, len);
+  LZ_EXPORT void lz_loadBytecode(luazi::VM* vm, const uint8_t* code, size_t len) {
+    if (vm && code) vm->load(code, len);
   }
 
-  double luazi_execute(luazi::VM* vm) {
+  LZ_EXPORT double lz_execute(luazi::VM* vm) {
+    if (!vm) return 0.0;
     luazi::Value result = vm->execute();
     return result.is_number() ? result.as_number() : (result.as_bool() ? 1.0 : 0.0);
   }
 
-  void luazi_set_global(luazi::VM* vm, const char* name, double val) {
-    luazi::String* s = vm->arena.construct<luazi::String>(vm->arena, name, std::strlen(name));
-    vm->globals.set(*s, luazi::Value::from_number(val));
+  LZ_EXPORT double lz_callFunction(luazi::VM* vm, const char* name, double* args, int argc) {
+    (void)vm; (void)name; (void)args; (void)argc;
+    return 0.0;
   }
 
-  double luazi_get_global(luazi::VM* vm, const char* name) {
-    luazi::String s(vm->arena, name, std::strlen(name));
-    luazi::Value* val = vm->globals.get(s);
+  LZ_EXPORT void lz_setGlobal(luazi::VM* vm, const char* name, double val) {
+    if (!vm || !name) return;
+    luazi::String* s = vm->get_arena().construct<luazi::String>(vm->get_arena(), name, std::strlen(name));
+    luazi::Value key(luazi::Type::String, s);
+    vm->get_globals().set(key, luazi::Value::from_number(val));
+  }
+
+  LZ_EXPORT double lz_getGlobal(luazi::VM* vm, const char* name) {
+    if (!vm || !name) return 0.0;
+    luazi::String* s = vm->get_arena().construct<luazi::String>(vm->get_arena(), name, std::strlen(name));
+    luazi::Value key(luazi::Type::String, s);
+    luazi::Value* val = vm->get_globals().get(key);
     return val && val->is_number() ? val->as_number() : 0.0;
   }
 
-  void luazi_collect_garbage(luazi::VM* vm) {
-    // Arena allocator - reset on full GC
-    vm->arena.reset();
+  LZ_EXPORT void lz_collectGarbage(luazi::VM* vm) {
+    if (vm) vm->get_arena().reset();
   }
+
+  LZ_EXPORT size_t lz_getMemoryStats(luazi::VM* vm) {
+    (void)vm;
+    return 0;
+  }
+
+  // luazi_* aliases
+  LZ_EXPORT luazi::VM* luazi_create_vm() { return lz_createVM(); }
+  LZ_EXPORT void luazi_destroy_vm(luazi::VM* vm) { lz_destroyVM(vm); }
+  LZ_EXPORT void luazi_load_bytecode(luazi::VM* vm, const uint8_t* code, size_t len) { lz_loadBytecode(vm, code, len); }
+  LZ_EXPORT double luazi_execute(luazi::VM* vm) { return lz_execute(vm); }
+  LZ_EXPORT void luazi_set_global(luazi::VM* vm, const char* name, double val) { lz_setGlobal(vm, name, val); }
+  LZ_EXPORT double luazi_get_global(luazi::VM* vm, const char* name) { return lz_getGlobal(vm, name); }
+  LZ_EXPORT void luazi_collect_garbage(luazi::VM* vm) { lz_collectGarbage(vm); }
 }
 
 } // namespace luazi

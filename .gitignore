@@ -4,14 +4,14 @@ C# Compiler
 Luazi.Compiler.csproj
 Compiler.cs
 Standard Library
-core.lz
-math.lz
+core.lzki
+math.lzki
 Examples
-hello.lz
-fib.lz
-game.lz
-async.lz
-simd.lz
+hello.lzki
+fib.lzki
+game.lzki
+async.lzki
+simd.lzki
 Benchmarks
 runner.js
 
@@ -60,3 +60,8 @@ coverage/
 *.tmp
 *.temp
 .cache/
+
+# Native binaries
+luazi-native
+luazi-native.exe
+

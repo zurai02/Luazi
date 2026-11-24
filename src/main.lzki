@@ -1,4 +1,4 @@
-// main.lz - Luazi Self-Hosted Compiler CLI
+// main.lzki - Luazi Self-Hosted Compiler CLI
 
 import core
 import compiler
@@ -42,8 +42,8 @@ fn cmd_compile(args: Vec<string>) {
     return
   }
   let bytecode = serialize(result.module)
-  fs.write_file(path + ".lzbc", bytecode)
-  println("Compiled to " + path + ".lzbc")
+  fs.write_file(path + ".lzkibc", bytecode)
+  println("Compiled to " + path + ".lzkibc")
 }
 
 fn cmd_check(args: Vec<string>) {

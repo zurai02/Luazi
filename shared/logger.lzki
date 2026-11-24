@@ -1,4 +1,4 @@
-// shared/logger.lz
+// shared/logger.lzki
 // Centralized logging with levels, colors, and formatting
 
 import { LogLevel } from './types'

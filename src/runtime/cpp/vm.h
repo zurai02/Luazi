@@ -428,15 +428,9 @@ public:
     void load(const uint8_t* bytecode, size_t len);
     Value execute();
 
-    // JS/WASM export interface
-    extern "C" {
-        static VM* create() { return new VM(); }
-        static void destroy(VM* vm) { delete vm; }
-        static void execute_bytecode(VM* vm, const uint8_t* code, size_t len);
-        static void set_global(VM* vm, const char* name, double val);
-        static double get_global(VM* vm, const char* name);
-        static void collect_garbage(VM* vm);
-    }
+    // Accessors for C runtime interface
+    Arena& get_arena() noexcept { return arena; }
+    Table<Value, Value>& get_globals() noexcept { return globals; }
 
 private:
     LZ_INLINE void dispatch();
@@ -457,5 +451,15 @@ private:
 };
 
 } // namespace luazi
+
+extern "C" {
+    luazi::VM* luazi_create_vm();
+    void luazi_destroy_vm(luazi::VM* vm);
+    void luazi_load_bytecode(luazi::VM* vm, const uint8_t* code, size_t len);
+    double luazi_execute(luazi::VM* vm);
+    void luazi_set_global(luazi::VM* vm, const char* name, double val);
+    double luazi_get_global(luazi::VM* vm, const char* name);
+    void luazi_collect_garbage(luazi::VM* vm);
+}
 
 #endif // LUAZI_VM_H

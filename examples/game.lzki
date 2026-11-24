@@ -1,4 +1,4 @@
-// game.lz - Game development example
+// game.lzki - Game development example
 // Demonstrates: structs, traits, impl, async, vectors, game loop
 
 import core

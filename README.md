@@ -23,13 +23,13 @@ cd Luazi
 npm install
 
 # Run a script
-npx ts-node src/cli/cli.ts examples/hello.lz
+npx ts-node src/cli/cli.ts examples/hello.lzkiki
 
 # Compile to bytecode
-npx ts-node src/cli/cli.ts -t bytecode script.lz
+npx ts-node src/cli/cli.ts -t bytecode script.lzkiki
 
 # Dump bytecode disassembly
-npx ts-node src/cli/cli.ts --dump-bytecode script.lz
+npx ts-node src/cli/cli.ts --dump-bytecode script.lzkiki
 ```
 
 ## Language Syntax
@@ -184,7 +184,7 @@ Options:
 ## Architecture
 
 ```
-Source (.lz)
+Source (.lzkiki)
     |
     v
 Tokenizer (src/core/tokenizer.ts)
@@ -199,7 +199,7 @@ Type Checker (src/core/typechecker.ts)
 Emitter (src/core/emitter.ts)
     |
     v
-Bytecode (.lzc)
+Bytecode (.lzkic)
     |
     +---> VM (src/core/vm.ts) - JS fallback interpreter
     |         |

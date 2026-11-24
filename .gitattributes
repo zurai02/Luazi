@@ -1,16 +1,16 @@
 # Luazi Git Attributes
-# Tells Git/GitHub how to handle .lz files and other project files
+# Tells Git/GitHub how to handle .lzki files and other project files
 
 # ============================================================================
 # LANGUAGE DETECTION
 # ============================================================================
 
-# Register .lz as Luazi language (for GitHub linguist bar)
-*.lz linguist-language=Luazi
-*.lz linguist-detectable=true
+# Register .lzki as Luazi language (for GitHub linguist bar)
+*.lzkiki linguist-language=Luazi
+*.lzkiki linguist-detectable=true
 
 # Standard library files
-*.lz text eol=lf
+*.lzkiki text eol=lf
 
 # ============================================================================
 # SOURCE FILES
@@ -86,7 +86,7 @@ CMakeLists.txt text eol=lf
 
 # Compiled output
 *.wasm binary
-*.lzc binary
+*.lzkikic binary
 *.o binary
 *.obj binary
 *.exe binary
@@ -129,7 +129,7 @@ CMakeLists.txt text eol=lf
 # ============================================================================
 
 # Use built-in diff for these
-*.lz diff
+*.lzkiki diff
 *.ts diff
 *.js diff
 *.cpp diff
@@ -169,8 +169,8 @@ __tests__/ export-ignore
 # Docs (keep README/LICENSE)
 docs/ export-ignore
 *.md export-ignore
-!README.md export-ignore
-!LICENSE export-ignore
+# !README.md export-ignore
+# !LICENSE export-ignore
 
 # Build artifacts
 dist/ export-ignore

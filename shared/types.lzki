@@ -1,4 +1,4 @@
-// shared/types.lz
+// shared/types.lzki
 // Central type definitions for all modules
 
 struct CliOptions {

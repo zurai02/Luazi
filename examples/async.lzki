@@ -1,4 +1,4 @@
-// async.lz - Async/await and concurrency patterns
+// async.lzki - Async/await and concurrency patterns
 // Demonstrates: async functions, promises, channels, parallel execution
 
 import core

@@ -1,4 +1,4 @@
-// mcp/server.lz
+// mcp/server.lzki
 // Model Context Protocol server for Claude/Codex integration
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
@@ -22,7 +22,7 @@ struct CompileTool {
     type: 'object',
     properties: {
       source: { type: 'string', description: 'Luazi source code to compile' },
-      filename: { type: 'string', description: 'Source filename', default: 'input.lz' },
+      filename: { type: 'string', description: 'Source filename', default: 'input.lzki' },
       target: { type: 'string', enum: ['bytecode', 'wat', 'cpp', 'csharp', 'js', 'run'], default: 'bytecode' },
       optimize: { type: 'integer', minimum: 0, maximum: 3, default: 0 },
       noTypeCheck: { type: 'boolean', default: false },
@@ -53,7 +53,7 @@ struct TypecheckTool {
     type: 'object',
     properties: {
       source: { type: 'string', description: 'Luazi source code' },
-      filename: { type: 'string', default: 'input.lz' }
+      filename: { type: 'string', default: 'input.lzki' }
     },
     required: ['source']
   }
@@ -92,7 +92,7 @@ struct BenchmarkTool {
     type: 'object',
     properties: {
       source: { type: 'string', description: 'Luazi source code' },
-      filename: { type: 'string', default: 'bench.lz' },
+      filename: { type: 'string', default: 'bench.lzki' },
       iterations: { type: 'integer', default: 1000 }
     },
     required: ['source']
@@ -106,7 +106,7 @@ struct GetAstTool {
     type: 'object',
     properties: {
       source: { type: 'string', description: 'Luazi source code' },
-      filename: { type: 'string', default: 'input.lz' }
+      filename: { type: 'string', default: 'input.lzki' }
     },
     required: ['source']
   }
@@ -216,7 +216,7 @@ fn setupHandlers(self: LuaziMcpServer) -> void {
 async fn handleCompile(self: LuaziMcpServer, args: any) -> any {
   let result = await self.orchestrator.handleRequest(self.clientId, 'compile', {
     source: args.source,
-    input: args.filename || 'input.lz',
+    input: args.filename || 'input.lzki',
     target: args.target || 'bytecode',
     optimize: args.optimize || 0,
     noTypeCheck: args.noTypeCheck || false,
@@ -299,7 +299,7 @@ async fn handleExecute(self: LuaziMcpServer, args: any) -> any {
 async fn handleTypeCheck(self: LuaziMcpServer, args: any) -> any {
   let result = await self.orchestrator.handleRequest(self.clientId, 'check', {
     source: args.source,
-    input: args.filename || 'input.lz'
+    input: args.filename || 'input.lzki'
   })
 
   if result.success {
@@ -395,7 +395,7 @@ async fn handleFormat(self: LuaziMcpServer, args: any) -> any {
 async fn handleBenchmark(self: LuaziMcpServer, args: any) -> any {
   let result = await self.orchestrator.handleRequest(self.clientId, 'benchmark', {
     source: args.source,
-    input: args.filename || 'bench.lz',
+    input: args.filename || 'bench.lzki',
     iterations: args.iterations || 1000
   })
 
@@ -423,7 +423,7 @@ async fn handleBenchmark(self: LuaziMcpServer, args: any) -> any {
 async fn handleGetAst(self: LuaziMcpServer, args: any) -> any {
   let result = await self.orchestrator.handleRequest(self.clientId, 'compile', {
     source: args.source,
-    input: args.filename || 'input.lz',
+    input: args.filename || 'input.lzki',
     target: 'run',
     optimize: 0,
     noTypeCheck: false,
@@ -504,12 +504,12 @@ async fn handleInitProject(self: LuaziMcpServer, args: any) -> any {
     name: name,
     version: '0.1.0',
     description: `A Luazi project`,
-    main: 'src/main.lz',
+    main: 'src/main.lzki',
     scripts: {
-      build: 'luazi compile src/main.lz',
-      run: 'luazi run src/main.lz',
-      test: 'luazi check tests/*.lz',
-      bench: 'luazi bench tests/bench.lz'
+      build: 'luazi compile src/main.lzki',
+      run: 'luazi run src/main.lzki',
+      test: 'luazi check tests/*.lzki',
+      bench: 'luazi bench tests/bench.lzki'
     },
     keywords: ['luazi'],
     license: 'MIT'
@@ -519,13 +519,13 @@ async fn handleInitProject(self: LuaziMcpServer, args: any) -> any {
     ? `// ${name} library\n\nexport fn greet(name: string) -> string {\n    return "Hello, " + name + "!"\n}\n`
     : `// ${name}\n\nfn main() {\n    print("Hello, Luazi!")\n}\n\nmain()\n`
 
-  fs.writeFileSync(path.join(dir, 'src', 'main.lz'), mainContent)
-  fs.writeFileSync(path.join(dir, '.gitignore'), `*.lzc\ndist/\nnode_modules/\n`)
+  fs.writeFileSync(path.join(dir, 'src', 'main.lzki'), mainContent)
+  fs.writeFileSync(path.join(dir, '.gitignore'), `*.lzkic\ndist/\nnode_modules/\n`)
 
   return {
     content: [{
       type: 'text',
-      text: `✓ Created project: ${name} (${template} template)\n\ncd ${name}\nluazi run src/main.lz`
+      text: `✓ Created project: ${name} (${template} template)\n\ncd ${name}\nluazi run src/main.lzki`
     }]
   }
 }

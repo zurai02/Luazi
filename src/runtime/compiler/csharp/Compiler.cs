@@ -1,5 +1,5 @@
 // Luazi Compiler - C# Frontend
-// Parses .lz files and compiles to bytecode
+// Parses .lzki files and compiles to bytecode
 
 using System.Text;
 using System.Text.RegularExpressions;
