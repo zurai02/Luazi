@@ -23,14 +23,19 @@ cd Luazi
 npm install
 
 # Run a script
-npx ts-node src/cli/cli.ts examples/hello.lzkiki
+npx ts-node src/cli/cli.ts examples/hello.lzki
 
 # Compile to bytecode
-npx ts-node src/cli/cli.ts -t bytecode script.lzkiki
+npx ts-node src/cli/cli.ts -t bytecode script.lzki
 
 # Dump bytecode disassembly
-npx ts-node src/cli/cli.ts --dump-bytecode script.lzkiki
+npx ts-node src/cli/cli.ts --dump-bytecode script.lzki
 ```
+
+## File Types
+
+- **Source files (`.lzki`)**: Used for writing and running scripts directly (for example, `examples/hello.lzki`).
+- **Bytecode files (`.lzkic`)**: Generated when compiling source code to bytecode using the `-t bytecode` flag.
 
 ## Language Syntax
 
@@ -184,7 +189,7 @@ Options:
 ## Architecture
 
 ```
-Source (.lzkiki)
+Source (.lzki)
     |
     v
 Tokenizer (src/core/tokenizer.ts)

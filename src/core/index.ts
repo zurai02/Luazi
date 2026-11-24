@@ -4,6 +4,7 @@
 export const VERSION = '1.0.0-alpha.2';
 export const EXTENSION = '.lzki';
 export const FILE_EXTENSION = 'lzki';
+export const BYTECODE_EXTENSION = '.lzkic';
 
 export interface VMConfig {
   initialMemory?: number;

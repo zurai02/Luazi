@@ -6,11 +6,11 @@
 # ============================================================================
 
 # Register .lzki as Luazi language (for GitHub linguist bar)
-*.lzkiki linguist-language=Luazi
-*.lzkiki linguist-detectable=true
+*.lzki linguist-language=Luazi
+*.lzki linguist-detectable=true
 
 # Standard library files
-*.lzkiki text eol=lf
+*.lzki text eol=lf
 
 # ============================================================================
 # SOURCE FILES
@@ -86,7 +86,7 @@ CMakeLists.txt text eol=lf
 
 # Compiled output
 *.wasm binary
-*.lzkikic binary
+*.lzkic binary
 *.o binary
 *.obj binary
 *.exe binary
@@ -129,7 +129,7 @@ CMakeLists.txt text eol=lf
 # ============================================================================
 
 # Use built-in diff for these
-*.lzkiki diff
+*.lzki diff
 *.ts diff
 *.js diff
 *.cpp diff

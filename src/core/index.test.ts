@@ -1,4 +1,4 @@
-import { VERSION, EXTENSION, FILE_EXTENSION, LuaziVM } from './index';
+import { VERSION, EXTENSION, FILE_EXTENSION, BYTECODE_EXTENSION, LuaziVM } from './index';
 
 describe('Luazi TypeScript Interface', () => {
   it('exports correct version', () => {
@@ -8,6 +8,7 @@ describe('Luazi TypeScript Interface', () => {
   it('uses .lzki file extension', () => {
     expect(EXTENSION).toBe('.lzki');
     expect(FILE_EXTENSION).toBe('lzki');
+    expect(BYTECODE_EXTENSION).toBe('.lzkic');
   });
 
   it('instantiates VM correctly', () => {
